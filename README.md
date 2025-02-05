@@ -95,7 +95,24 @@ Ensure that the `document_store/pdfs/` directory exists. If not, create it:
   mkdir -p document_store/pdfs
   ```
 
-### 5. Run the Application
+### 5. Setup Ollama and Download the Deepseek Model
+
+DocuMind-AI uses the Deepseek model through Ollama for embeddings and language model capabilities. Follow these steps:
+
+1. **Install Ollama:**
+   - Download and install Ollama from the [Ollama website](https://ollama.com) or follow the installation instructions provided there.
+   - Ensure that Ollama is running locally before starting the application.
+
+2. **Download the Deepseek Model:**
+   - With Ollama running, download the Deepseek model by executing:
+
+     ```bash
+     ollama pull deepseek-r1:1.5b
+     ```
+
+   This command downloads the Deepseek model (version 1.5b) locally, which is required for generating embeddings and language model responses.
+
+### 6. Run the Application
 
 Start the Streamlit application with the following command:
 
