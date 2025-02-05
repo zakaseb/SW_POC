@@ -1,0 +1,11 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environment
+venv/
+.env/
+
+# Uploaded PDFs directory (if you don't want to commit user uploads)
+document_store/pdfs/
