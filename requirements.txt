@@ -1,0 +1,14 @@
+# Web app framework
+streamlit>=1.24.1
+
+# LangChain core functionality
+langchain_core>=0.0.1
+
+# LangChain community extensions (e.g., document loaders)
+langchain_community>=0.0.1
+
+# LangChain integration with Ollama (LLM and embeddings)
+langchain_ollama>=0.0.1
+
+# PDF parsing and document extraction
+pdfplumber>=0.6.0
