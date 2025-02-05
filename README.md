@@ -1,5 +1,5 @@
 [![CodeQL Advanced](https://github.com/chintanboghara/DocuMind-AI/actions/workflows/codeql.yml/badge.svg)](https://github.com/chintanboghara/DocuMind-AI/actions/workflows/codeql.yml)
-[![Dependency review](https://github.com/chintanboghara/DocuMind-AI/actions/workflows/dependency-review.yml/badge.svg?branch=main)](https://github.com/chintanboghara/DocuMind-AI/actions/workflows/dependency-review.yml)
+[![Dependency Review](https://github.com/chintanboghara/DocuMind-AI/actions/workflows/dependency-review.yml/badge.svg)](https://github.com/chintanboghara/DocuMind-AI/actions/workflows/dependency-review.yml)
 
 # DocuMind-AI
 
