@@ -1,3 +1,5 @@
+[![CodeQL Advanced](https://github.com/chintanboghara/DocuMind-AI/actions/workflows/codeql.yml/badge.svg)](https://github.com/chintanboghara/DocuMind-AI/actions/workflows/codeql.yml)
+
 # DocuMind-AI
 
 **DocuMind-AI** is an intelligent document assistant built with Streamlit and LangChain. It enables users to upload a PDF document, process its contents, and interactively ask questions about it using AI. The assistant leverages embeddings and language models to provide concise, factual answers based on the document's context.
