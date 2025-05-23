@@ -190,3 +190,60 @@ This will launch a local web server, typically at [http://localhost:8501](http:/
 
 - **Dependency Conflicts:**  
   If you encounter issues with package installations, ensure that your virtual environment is activated and that you are using the correct Python version.
+
+## Running with Docker
+
+This section provides instructions on how to run the DocuMind-AI application using Docker and Docker Compose.
+
+### Prerequisites
+
+- **Docker**: Install Docker Desktop (for Windows/Mac) or Docker Engine (for Linux). Download from [https://www.docker.com/products/docker-desktop/](https://www.docker.com/products/docker-desktop/).
+- **Docker Compose**: Included with Docker Desktop. For Linux, you might need to install it separately. See the [official Docker Compose installation guide](https://docs.docker.com/compose/install/).
+- **Ollama**: Must be installed and running on your system or accessible over the network. The DocuMind-AI application container needs to connect to your Ollama instance to use the language models. Ensure you have pulled the required model (e.g., `ollama pull deepseek-r1:1.5b`).
+
+### Setup & Running
+
+1.  **Clone the Repository**:
+    If you haven't already, clone the repository:
+    ```bash
+    git clone https://github.com/chintanboghara/DocuMind-AI.git
+    cd DocuMind-AI
+    ```
+
+2.  **Configure Ollama Access**:
+    *   The `docker-compose.yml` file included in this repository sets the `OLLAMA_BASE_URL` environment variable for the application container to `http://host.docker.internal:11434` by default. This address is typically used to allow a Docker container to access services running on the host machine when using Docker Desktop on Windows or Mac.
+    *   **If Ollama is running elsewhere** (e.g., on a different port, a different host machine, or in its own Docker container on a custom Docker network), you **must** update the `OLLAMA_BASE_URL` in the `docker-compose.yml` file.
+        ```yaml
+        services:
+          app:
+            # ... other configurations
+            environment:
+              - OLLAMA_BASE_URL=http://your-ollama-host-or-ip:your-ollama-port
+        ```
+    *   **Example for Linux users**: If Ollama is running on your host machine (the same machine running Docker), `host.docker.internal` may not resolve. You can often use your machine's IP address on the Docker bridge network (e.g., `172.17.0.1` by default on some systems, but this can vary). Alternatively, you can run Ollama in a Docker container and connect both containers to a shared Docker network.
+
+3.  **Build and Run the Application**:
+    Navigate to the root directory of the cloned repository (where `docker-compose.yml` is located) and run:
+    ```bash
+    docker-compose up --build -d
+    ```
+    - `--build`: Forces Docker Compose to build the image from the `Dockerfile` (useful for the first run or after changes).
+    - `-d`: Runs the containers in detached mode (in the background).
+
+4.  **Accessing the Application**:
+    *   Once the container is running (it might take a minute for the first build and startup), open your web browser and navigate to `http://localhost:8501`.
+
+5.  **Stopping the Application**:
+    To stop the application and remove the containers defined in `docker-compose.yml`, run:
+    ```bash
+    docker-compose down
+    ```
+
+### Persistent Storage
+
+- The `document_store/pdfs` directory (which stores uploaded documents) is mapped from your local machine into the container using a volume defined in `docker-compose.yml`:
+  ```yaml
+  volumes:
+    - ./document_store:/app/document_store/
+  ```
+- This means that any documents you upload will persist on your host machine even if the Docker container is stopped, removed, and rebuilt.
