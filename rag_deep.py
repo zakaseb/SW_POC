@@ -92,16 +92,19 @@ PDF_STORAGE_PATH = "document_store/pdfs/"
 # Ensure the PDF storage directory exists
 os.makedirs(PDF_STORAGE_PATH, exist_ok=True)
 
+# Fetch Ollama base URL from environment variable, with a default
+OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
+
 # Cached functions to load models
 @st.cache_resource
 def get_embedding_model():
-    print("Loading Embedding Model...") # For debugging/verifying cache
-    return OllamaEmbeddings(model="deepseek-r1:1.5b")
+    print(f"Loading Embedding Model from: {OLLAMA_BASE_URL}") # For debugging/verifying cache
+    return OllamaEmbeddings(model="deepseek-r1:1.5b", base_url=OLLAMA_BASE_URL)
 
 @st.cache_resource
 def get_language_model():
-    print("Loading Language Model...") # For debugging/verifying cache
-    return OllamaLLM(model="deepseek-r1:1.5b")
+    print(f"Loading Language Model from: {OLLAMA_BASE_URL}") # For debugging/verifying cache
+    return OllamaLLM(model="deepseek-r1:1.5b", base_url=OLLAMA_BASE_URL)
 
 # Initialize models using cached functions
 EMBEDDING_MODEL = get_embedding_model()

@@ -1,0 +1,48 @@
+# Git files
+.git/
+.gitignore
+
+# Python virtual environment
+venv/
+*.venv/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Test files and directories
+tests/
+test/
+*.test.py
+*.spec.py
+requirements-dev.txt
+pytest.ini
+
+# IDE and editor directories
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS-specific files
+.DS_Store
+Thumbs.db
+
+# Documentation files (except README.md)
+Explanation.md
+# Add other markdown files if any, except README.md
+
+# Build artifacts
+dist/
+build/
+*.egg-info/
+
+# Secrets or local configuration (if any were planned)
+# .env
+
+# Docker files themselves if not needed inside image
+Dockerfile
+docker-compose.yml
+.dockerignore
