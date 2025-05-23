@@ -10,6 +10,7 @@ from langchain_core.documents import Document as LangchainDocument
 import docx # For Document and opc.exceptions
 import pdfplumber # For pdfplumber.exceptions
 from rank_bm25 import BM25Okapi
+from sentence_transformers import CrossEncoder
 
 
 # ---------------------------------
@@ -83,6 +84,9 @@ MAX_HISTORY_TURNS = 3 # Number of recent user/assistant turn pairs to include in
 K_SEMANTIC = 5 # Number of results for semantic search
 K_BM25 = 5     # Number of results for BM25 search
 K_RRF_PARAM = 60 # Constant for Reciprocal Rank Fusion (RRF)
+TOP_K_FOR_RERANKER = 10 # Number of docs from hybrid search to pass to reranker
+FINAL_TOP_N_FOR_CONTEXT = 3 # Number of docs reranker should return for LLM context
+
 
 PROMPT_TEMPLATE = """
 You are an expert research assistant. Use the provided document context and conversation history to answer the current query.
@@ -121,6 +125,24 @@ def get_language_model():
 # Initialize models using cached functions
 EMBEDDING_MODEL = get_embedding_model()
 LANGUAGE_MODEL = get_language_model()
+
+# Cached function to load the reranker model
+@st.cache_resource
+def get_reranker_model(model_name='cross-encoder/ms-marco-MiniLM-L-6-v2'):
+    """
+    Loads and caches the CrossEncoder model for re-ranking.
+    """
+    try:
+        print(f"Loading CrossEncoder model: {model_name}") # For debugging/verifying cache
+        model = CrossEncoder(model_name)
+        return model
+    except Exception as e:
+        st.error(f"Error loading CrossEncoder model '{model_name}': {e}. Re-ranking will be disabled.")
+        return None
+
+# Initialize reranker model
+RERANKER_MODEL_NAME = 'cross-encoder/ms-marco-MiniLM-L-6-v2'
+RERANKER_MODEL = get_reranker_model(RERANKER_MODEL_NAME)
 
 # Initialize or retrieve the vector store from session state for persistence across interactions
 # Note: The vector store itself is not cached with st.cache_resource here because it's mutable 
@@ -355,6 +377,46 @@ def combine_results_rrf(search_results_dict, k_param=K_RRF_PARAM):
     
     print(f"RRF combined {len(semantic_results)} semantic and {len(bm25_results)} BM25 results into {len(final_combined_docs)} unique docs.")
     return final_combined_docs
+
+def rerank_documents(query: str, documents: list, model: CrossEncoder, top_n: int = 5):
+    """
+    Re-ranks a list of documents based on their relevance to a query using a CrossEncoder model.
+    Args:
+        query (str): The user query.
+        documents (list): A list of Langchain Document objects to re-rank.
+        model (CrossEncoder): The pre-loaded CrossEncoder model.
+        top_n (int): The number of top documents to return.
+    Returns:
+        list: A list of top_n re-ranked Langchain Document objects.
+    """
+    if not documents:
+        return []
+    if model is None: # If the reranker model failed to load
+        st.warning("Re-ranker model not available. Returning documents without re-ranking.")
+        # Return up to top_n documents without re-ranking as a fallback
+        return documents[:top_n]
+
+    # Create pairs of (query, document_text) for the model
+    pairs = [(query, doc.page_content) for doc in documents]
+
+    try:
+        # Predict scores
+        scores = model.predict(pairs, show_progress_bar=False) # show_progress_bar can be True for debugging
+    except Exception as e:
+        st.error(f"Error during document re-ranking: {e}")
+        # Fallback: return original documents up to top_n if prediction fails
+        return documents[:top_n]
+
+    # Combine documents with their scores
+    scored_documents = list(zip(scores, documents))
+
+    # Sort documents by score in descending order
+    scored_documents.sort(key=lambda x: x[0], reverse=True)
+
+    # Extract the top_n documents
+    reranked_docs = [doc for score, doc in scored_documents[:top_n]]
+
+    return reranked_docs
 
 
 def generate_answer(user_query, context_documents, conversation_history=""):
@@ -612,19 +674,33 @@ if st.session_state.document_processed:
                 st.write(user_input)
 
             with st.spinner("Thinking..."):
-                retrieved_results_dict = find_related_documents(user_input) 
-                
-                # Combine results using RRF
-                combined_docs_for_context = combine_results_rrf(retrieved_results_dict)
-                
-                if not combined_docs_for_context:
-                    ai_response = "I could not find relevant sections in the document to answer your question. Please ensure the document contains information related to your query or try rephrasing."
+                retrieved_results_dict = find_related_documents(user_input)
+                hybrid_search_docs = combine_results_rrf(retrieved_results_dict, k_param=K_RRF_PARAM)
+
+                final_context_docs = []
+                if hybrid_search_docs:
+                    # Pass top K docs from hybrid search to the reranker
+                    docs_for_reranking = hybrid_search_docs[:TOP_K_FOR_RERANKER]
+                    
+                    if RERANKER_MODEL: # Check if reranker model loaded successfully
+                        with st.spinner(f"Re-ranking top {len(docs_for_reranking)} documents..."):
+                            final_context_docs = rerank_documents(user_input, docs_for_reranking, RERANKER_MODEL, top_n=FINAL_TOP_N_FOR_CONTEXT)
+                    else: # Fallback if reranker model is not available
+                        st.info("Re-ranker model not loaded. Using documents from hybrid search directly.")
+                        final_context_docs = docs_for_reranking[:FINAL_TOP_N_FOR_CONTEXT] # Take top N from hybrid results
+
+                    if not final_context_docs:
+                        ai_response = "After re-ranking, no relevant sections were found in the document to answer your query."
+                        # No need to call generate_answer if context is empty
+                    else:
+                        # Context text is built from final_context_docs inside generate_answer
+                        ai_response = generate_answer(
+                            user_query=user_input,
+                            context_documents=final_context_docs,
+                            conversation_history=formatted_history
+                        )
                 else:
-                    ai_response = generate_answer(
-                        user_query=user_input, 
-                        context_documents=combined_docs_for_context,
-                        conversation_history=formatted_history
-                    )
+                    ai_response = "I could not find relevant sections in the document to answer your query. Please ensure the document contains information related to your query or try rephrasing."
             
             st.session_state.messages.append({"role": "assistant", "content": ai_response, "avatar": "🤖"})
             with st.chat_message("assistant", avatar="🤖"):
