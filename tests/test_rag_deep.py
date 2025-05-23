@@ -11,14 +11,18 @@ from rag_deep import (
     load_document,
     generate_summary,
     generate_keywords,
-    generate_answer, # Added this
-    PROMPT_TEMPLATE as RAG_PROMPT_TEMPLATE, # Import for checking prompt content for generate_answer
+    generate_answer,
+    find_related_documents, # Added this
+    combine_results_rrf,  # Added this
+    PROMPT_TEMPLATE as RAG_PROMPT_TEMPLATE, 
     SUMMARIZATION_PROMPT_TEMPLATE,
-    KEYWORD_EXTRACTION_PROMPT_TEMPLATE
+    KEYWORD_EXTRACTION_PROMPT_TEMPLATE,
+    K_RRF_PARAM, K_SEMANTIC, K_BM25 # Import constants
 )
 from langchain_core.documents import Document as LangchainDocument
 from docx.opc.exceptions import PackageNotFoundError
 import pdfplumber # Required for one of the mocked exceptions
+from rank_bm25 import BM25Okapi # Added this
 
 # Define the path to test data files
 TEST_DATA_DIR = os.path.join(os.path.dirname(__file__), "test_data")
@@ -302,13 +306,306 @@ def test_generate_answer_empty_context_docs(capsys):
     assert response == "I couldn't find relevant information in the document to answer your query."
 
 
-# General Notes (can be kept or removed from final file)
-# - The `sys.path.insert` is for local testing convenience.
-# - `setup_test_environment` fixture prepares dummy files.
-# - `capsys` is used for capturing Streamlit's st.error/st.warning outputs.
-# - LLM interactions are mocked using `unittest.mock.patch` and `MagicMock`.
-# - Specific Langchain Document objects are created for context in `generate_answer` tests.
-# - The tests for `generate_answer` now specifically check how `conversation_history` is passed.
+# --- Mock Streamlit session state for specific tests ---
+@pytest.fixture
+def mock_session_state(mocker):
+    # Using a dictionary to simulate session_state
+    # This allows tests to set/get values as if it were st.session_state
+    # without actually using Streamlit's global session state.
+    _session_state_dict = {
+        "bm25_index": None,
+        "bm25_corpus_chunks": [],
+        "document_processed": False, # Default to not processed
+        "DOCUMENT_VECTOR_DB": MagicMock() # Mock vector DB
+    }
+
+    # Mock st.session_state.get
+    def get_side_effect(key, default=None):
+        return _session_state_dict.get(key, default)
+
+    # Mock direct attribute access if used (e.g., st.session_state.bm25_index)
+    # This is more complex as st.session_state is not a simple dict.
+    # For functions in rag_deep.py that use st.session_state.get("key"),
+    # patching st.session_state.get is often cleaner.
+    # If direct access like st.session_state.key is used, then
+    # patching st.session_state itself to be a MagicMock or a custom class is needed.
+    # rag_deep.py mostly uses st.session_state.get("bm25_index"), which is good.
+    
+    mocker.patch('streamlit.session_state', _session_state_dict) # For direct access if any
+    
+    # For functions using st.session_state.get(key), we can mock it if rag_deep imports streamlit as st
+    # For direct imports like `from streamlit import session_state`, it's harder.
+    # Let's assume rag_deep.py does `import streamlit as st` and uses `st.session_state.get`.
+    # However, rag_deep directly uses st.session_state.bm25_index etc.
+    # So, the patch above with a dictionary should work for direct attribute access.
+    # We'll manage the dict directly in tests.
+    return _session_state_dict
+
+
+# --- Test BM25 Indexing Process (Conceptual - as it's part of main app flow) ---
+# This test is more of an integration test for the BM25 part of the main app logic.
+# We'll simulate the conditions under which BM25 indexing occurs.
+
+def test_bm25_indexing_process(mock_session_state, capsys):
+    # Simulate that vector indexing was successful
+    mock_session_state["document_processed"] = True
+    
+    # Mock processed_chunks that would come from chunk_documents
+    doc_content1 = "This is the first chunk for BM25."
+    doc_content2 = "Another chunk, the second one for testing BM25."
+    processed_chunks = [
+        LangchainDocument(page_content=doc_content1),
+        LangchainDocument(page_content=doc_content2)
+    ]
+
+    # Simulate the part of the main app logic that creates BM25 index
+    # This is a direct copy of the logic from rag_deep.py's main block for testing purposes
+    if mock_session_state["document_processed"]:
+        try:
+            corpus_texts = [chunk.page_content for chunk in processed_chunks]
+            tokenized_corpus = [doc.lower().split(" ") for doc in corpus_texts]
+            
+            mock_session_state["bm25_index"] = BM25Okapi(tokenized_corpus)
+            mock_session_state["bm25_corpus_chunks"] = processed_chunks
+            # print("BM25 index created for test") # For test debugging
+        except Exception as e:
+            # print(f"Test BM25 indexing error: {e}") # For test debugging
+            pass # Let assertions handle it
+
+    assert isinstance(mock_session_state["bm25_index"], BM25Okapi)
+    assert mock_session_state["bm25_corpus_chunks"] == processed_chunks
+    assert len(mock_session_state["bm25_corpus_chunks"]) == 2
+
+
+# --- Tests for find_related_documents (Hybrid Retrieval) ---
+
+def create_mock_doc(content, source="mock_source"):
+    return LangchainDocument(page_content=content, metadata={"source": source})
+
+@patch('rag_deep.st.session_state', new_callable=MagicMock) # Mock entire session_state object
+def test_find_related_documents_both_results(mock_st_session_state):
+    # Setup mock session state
+    mock_st_session_state.document_processed = True
+    mock_st_session_state.get = lambda key, default=None: getattr(mock_st_session_state, key, default)
+
+    # Semantic search results
+    semantic_doc1 = create_mock_doc("semantic result 1")
+    semantic_doc2 = create_mock_doc("semantic result 2")
+    mock_st_session_state.DOCUMENT_VECTOR_DB = MagicMock()
+    mock_st_session_state.DOCUMENT_VECTOR_DB.similarity_search.return_value = [semantic_doc1, semantic_doc2]
+
+    # BM25 search results
+    bm25_doc1 = create_mock_doc("bm25 result 1")
+    bm25_doc2 = create_mock_doc("bm25 result 2")
+    mock_bm25_index = MagicMock(spec=BM25Okapi)
+    mock_bm25_index.get_scores.return_value = [0.9, 0.8] # Scores for two docs
+    mock_st_session_state.bm25_index = mock_bm25_index
+    mock_st_session_state.bm25_corpus_chunks = [bm25_doc1, bm25_doc2] # Chunks corresponding to scores
+
+    results = find_related_documents("test query")
+
+    assert len(results["semantic_results"]) == 2
+    assert results["semantic_results"][0].page_content == "semantic result 1"
+    mock_st_session_state.DOCUMENT_VECTOR_DB.similarity_search.assert_called_once_with("test query", k=K_SEMANTIC)
+    
+    assert len(results["bm25_results"]) == 2
+    assert results["bm25_results"][0].page_content == "bm25 result 1" # Assuming scores lead to this order
+    mock_bm25_index.get_scores.assert_called_once_with(["test", "query"])
+
+
+@patch('rag_deep.st.session_state', new_callable=MagicMock)
+def test_find_related_documents_only_semantic(mock_st_session_state):
+    mock_st_session_state.document_processed = True
+    mock_st_session_state.get = lambda key, default=None: getattr(mock_st_session_state, key, default)
+
+    semantic_doc1 = create_mock_doc("semantic only")
+    mock_st_session_state.DOCUMENT_VECTOR_DB = MagicMock()
+    mock_st_session_state.DOCUMENT_VECTOR_DB.similarity_search.return_value = [semantic_doc1]
+    
+    mock_st_session_state.bm25_index = None # BM25 not available
+    mock_st_session_state.bm25_corpus_chunks = []
+
+    results = find_related_documents("test query")
+    assert len(results["semantic_results"]) == 1
+    assert results["semantic_results"][0].page_content == "semantic only"
+    assert len(results["bm25_results"]) == 0
+
+@patch('rag_deep.st.session_state', new_callable=MagicMock)
+def test_find_related_documents_only_bm25(mock_st_session_state):
+    mock_st_session_state.document_processed = True
+    mock_st_session_state.get = lambda key, default=None: getattr(mock_st_session_state, key, default)
+
+    mock_st_session_state.DOCUMENT_VECTOR_DB = MagicMock()
+    mock_st_session_state.DOCUMENT_VECTOR_DB.similarity_search.return_value = [] # No semantic results
+
+    bm25_doc1 = create_mock_doc("bm25 only")
+    mock_bm25_index = MagicMock(spec=BM25Okapi)
+    mock_bm25_index.get_scores.return_value = [0.9]
+    mock_st_session_state.bm25_index = mock_bm25_index
+    mock_st_session_state.bm25_corpus_chunks = [bm25_doc1]
+
+    results = find_related_documents("test query")
+    assert len(results["semantic_results"]) == 0
+    assert len(results["bm25_results"]) == 1
+    assert results["bm25_results"][0].page_content == "bm25 only"
+
+@patch('rag_deep.st.session_state', new_callable=MagicMock)
+def test_find_related_documents_no_results(mock_st_session_state):
+    mock_st_session_state.document_processed = True
+    mock_st_session_state.get = lambda key, default=None: getattr(mock_st_session_state, key, default)
+
+    mock_st_session_state.DOCUMENT_VECTOR_DB = MagicMock()
+    mock_st_session_state.DOCUMENT_VECTOR_DB.similarity_search.return_value = []
+    
+    mock_st_session_state.bm25_index = MagicMock(spec=BM25Okapi)
+    mock_st_session_state.bm25_index.get_scores.return_value = [] # Or [0.0, 0.0] for existing chunks
+    mock_st_session_state.bm25_corpus_chunks = [create_mock_doc("doc1"), create_mock_doc("doc2")]
+
+
+    results = find_related_documents("query for no results")
+    assert len(results["semantic_results"]) == 0
+    assert len(results["bm25_results"]) == 0
+
+
+# --- Tests for combine_results_rrf ---
+
+def test_combine_results_rrf_no_overlap():
+    docS1 = create_mock_doc("semantic doc 1")
+    docS2 = create_mock_doc("semantic doc 2")
+    docB1 = create_mock_doc("bm25 doc 1")
+    docB2 = create_mock_doc("bm25 doc 2")
+    
+    search_results = {
+        "semantic_results": [docS1, docS2], # Ranks 0, 1
+        "bm25_results": [docB1, docB2]      # Ranks 0, 1
+    }
+    combined = combine_results_rrf(search_results, k_param=K_RRF_PARAM)
+    
+    assert len(combined) == 4
+    # With K_RRF_PARAM = 60 (default in function, but explicit here for clarity)
+    # Score for rank 0: 1/(60+1) approx 0.01639
+    # Score for rank 1: 1/(60+2) approx 0.01613
+    # docS1 and docB1 have higher scores. Their order relative to each other depends on stable sort if scores are equal.
+    # Here, Python's sort is stable, so original list order for equal scores might be preserved.
+    # For RRF, the combined score for docS1 is 1/61, for docB1 is 1/61.
+    # For docS2 is 1/62, for docB2 is 1/62.
+    # So, {docS1, docB1} should appear before {docS2, docB2}.
+    
+    combined_contents = [doc.page_content for doc in combined]
+    assert docS1.page_content in combined_contents[:2]
+    assert docB1.page_content in combined_contents[:2]
+    assert docS2.page_content in combined_contents[2:]
+    assert docB2.page_content in combined_contents[2:]
+
+
+def test_combine_results_rrf_full_overlap():
+    doc1 = create_mock_doc("doc content 1")
+    doc2 = create_mock_doc("doc content 2")
+    
+    # Semantic: doc1 (rank 0), doc2 (rank 1)
+    # BM25:     doc2 (rank 0), doc1 (rank 1)
+    search_results = {
+        "semantic_results": [doc1, doc2],
+        "bm25_results": [doc2, doc1] 
+    }
+    combined = combine_results_rrf(search_results, k_param=1) # Using k=1 for simpler score calculation
+    # Score for doc1: 1/(1+1) [semantic] + 1/(1+2) [bm25] = 0.5 + 0.333 = 0.833
+    # Score for doc2: 1/(1+2) [semantic] + 1/(1+1) [bm25] = 0.333 + 0.5 = 0.833
+    
+    assert len(combined) == 2
+    # Since scores are equal, their order can vary due to sort stability.
+    # We just need to ensure both are present.
+    assert doc1 in combined
+    assert doc2 in combined
+    # If we want to assert specific order for equal scores, we'd need to know Python's Timsort stability details
+    # or ensure unique scores. For this test, presence is key.
+    # A more robust test would make scores slightly different.
+
+    # Let's make scores different by changing K_RRF_PARAM or ranks
+    # Semantic: doc1 (rank 0), doc2 (rank 1) -> Scores: 1/61, 1/62
+    # BM25:     doc2 (rank 0), doc1 (rank 1) -> Scores: 1/61, 1/62
+    # Total doc1: 1/61 + 1/62
+    # Total doc2: 1/62 + 1/61 
+    # Scores are identical. Order depends on stability or original encounter order.
+    
+    # To make it deterministic, let's make one rank higher consistently
+    search_results_deterministic = {
+        "semantic_results": [doc1, doc2], # doc1 has higher semantic rank
+        "bm25_results": [doc1, doc2]      # doc1 has higher bm25 rank
+    }
+    combined_det = combine_results_rrf(search_results_deterministic, k_param=K_RRF_PARAM)
+    assert len(combined_det) == 2
+    assert combined_det[0] == doc1 # doc1 should have sum of two higher scores
+    assert combined_det[1] == doc2
+
+
+def test_combine_results_rrf_partial_overlap():
+    doc1 = create_mock_doc("doc1 common")
+    docS2 = create_mock_doc("docS2 semantic only")
+    docB2 = create_mock_doc("docB2 bm25 only")
+    
+    # Semantic: doc1 (rank 0), docS2 (rank 1)
+    # BM25:     doc1 (rank 0), docB2 (rank 1)
+    search_results = {
+        "semantic_results": [doc1, docS2],
+        "bm25_results": [doc1, docB2]
+    }
+    combined = combine_results_rrf(search_results, k_param=1)
+    # Score for doc1: 1/(1+1) + 1/(1+1) = 0.5 + 0.5 = 1.0
+    # Score for docS2: 1/(1+2) = 0.333
+    # Score for docB2: 1/(1+2) = 0.333
+    
+    assert len(combined) == 3
+    assert combined[0] == doc1 # doc1 has the highest RRF score
+    # docS2 and docB2 have equal scores, their order might vary
+    assert docS2 in combined[1:]
+    assert docB2 in combined[1:]
+
+def test_combine_results_rrf_empty_lists():
+    docS1 = create_mock_doc("semantic doc 1")
+    docB1 = create_mock_doc("bm25 doc 1")
+
+    # Both empty
+    combined_both_empty = combine_results_rrf({"semantic_results": [], "bm25_results": []})
+    assert len(combined_both_empty) == 0
+
+    # Semantic empty
+    combined_sem_empty = combine_results_rrf({"semantic_results": [], "bm25_results": [docB1]})
+    assert len(combined_sem_empty) == 1
+    assert combined_sem_empty[0] == docB1
+
+    # BM25 empty
+    combined_bm25_empty = combine_results_rrf({"semantic_results": [docS1], "bm25_results": []})
+    assert len(combined_bm25_empty) == 1
+    assert combined_bm25_empty[0] == docS1
+
+
+def test_combine_results_rrf_varying_ranks_and_k():
+    docA = create_mock_doc("A")
+    docB = create_mock_doc("B")
+    docC = create_mock_doc("C")
+    docD = create_mock_doc("D") # Unique to BM25
+
+    # Ranks: Sem: A(0) B(1) C(2)  | BM25: B(0) C(1) A(2) D(3)
+    # k_param = 2 (for easier math)
+    # Scores: 1/(k+rank+1)
+    # Doc A: Sem_score = 1/(2+0+1)=1/3 | BM25_score = 1/(2+2+1)=1/5  => Total = 1/3 + 1/5 = 8/15 = 0.533
+    # Doc B: Sem_score = 1/(2+1+1)=1/4 | BM25_score = 1/(2+0+1)=1/3  => Total = 1/4 + 1/3 = 7/12 = 0.583
+    # Doc C: Sem_score = 1/(2+2+1)=1/5 | BM25_score = 1/(2+1+1)=1/4  => Total = 1/5 + 1/4 = 9/20 = 0.45
+    # Doc D: Sem_score = 0           | BM25_score = 1/(2+3+1)=1/6  => Total = 1/6 = 0.166
+    # Expected order: B, A, C, D
+
+    search_results = {
+        "semantic_results": [docA, docB, docC],
+        "bm25_results": [docB, docC, docA, docD]
+    }
+    combined = combine_results_rrf(search_results, k_param=2)
+
+    assert len(combined) == 4
+    assert combined[0] == docB
+    assert combined[1] == docA
+    assert combined[2] == docC
+    assert combined[3] == docD
 The test file includes:
 *   Setup for test data paths and creation of dummy/empty files for specific test cases using a pytest fixture (`setup_test_environment`).
 *   **Tests for `load_document`**:
