@@ -24,6 +24,9 @@ st.markdown(
 ### **2. Global Configuration**
 ```python
 MAX_HISTORY_TURNS = 3 # Number of recent user/assistant turn pairs to include in history
+K_SEMANTIC = 5 # Number of results for semantic search
+K_BM25 = 5     # Number of results for BM25 search
+K_RRF_PARAM = 60 # Constant for Reciprocal Rank Fusion (RRF)
 
 PROMPT_TEMPLATE = """
 You are an expert research assistant. Use the provided document context and conversation history to answer the current query.
@@ -123,17 +126,31 @@ def chunk_documents(raw_documents):
 def index_documents(document_chunks):
     # ... (handles empty document_chunks, improved error messages)
 ```
-- **Adds** the processed text chunks to the **in-memory vector store** (`st.session_state.DOCUMENT_VECTOR_DB`).
-- Allows efficient **semantic search**.
+- **Adds** the processed text chunks to the **in-memory vector store** (`st.session_state.DOCUMENT_VECTOR_DB`) for semantic search.
+- Alongside vector indexing, a **BM25 index** is also created from the same document chunks (`st.session_state.bm25_index` and `st.session_state.bm25_corpus_chunks` are populated). This allows for keyword-based search.
 
-#### **3.5 Perform Similarity Search**
+#### **3.5 Perform Hybrid Search (Retrieval)**
 ```python
 def find_related_documents(query):
-    # ... (handles empty query, improved error messages)
+    # ... (performs semantic search using DOCUMENT_VECTOR_DB.similarity_search)
+    # ... (performs BM25 search using bm25_index.get_scores if bm25_index is available)
 ```
-- Searches for **related document chunks** based on **semantic similarity** to the user's query.
+- This function, formerly just "Perform Similarity Search," now executes a **hybrid search strategy**:
+  - It performs a **semantic search** using the vector store (FAISS via `InMemoryVectorStore`) to find `K_SEMANTIC` relevant chunks based on contextual meaning.
+  - It also performs a **keyword-based search** using the BM25 index to find `K_BM25` relevant chunks based on term frequency and inverse document frequency.
+- Returns a dictionary containing lists of results from both search methods (`{"semantic_results": ..., "bm25_results": ...}`).
 
-#### **3.6 Generate an Answer**
+#### **3.6 Combine Search Results (Reciprocal Rank Fusion)**
+```python
+def combine_results_rrf(search_results_dict, k_param=K_RRF_PARAM):
+    # ... (calculates RRF scores and sorts documents)
+```
+- This new function takes the results from `find_related_documents`.
+- It combines the document lists from semantic and BM25 searches using **Reciprocal Rank Fusion (RRF)**.
+- RRF assigns a score to each document based on its rank in each result list (score = 1 / (k_param + rank)). Scores for the same document from different lists are summed.
+- The final list of documents is de-duplicated and sorted by the combined RRF score, providing a more robustly ranked set of context chunks.
+
+#### **3.7 Generate an Answer**
 ```python
 def generate_answer(user_query, context_documents, conversation_history=""):
     # ... (handles empty query/context, empty LLM response, improved error messages)
@@ -229,23 +246,27 @@ if st.session_state.document_processed:
     user_input = st.chat_input(...)
     if user_input:
         # ... (logic to format recent st.session_state.messages into formatted_history)
-        # ... (append to messages, get relevant_docs, generate_answer(..., conversation_history=formatted_history))
-        # ... (display user and assistant messages, with generate_answer handling its own errors/warnings)
+        retrieved_results_dict = find_related_documents(user_input)
+        combined_docs_for_context = combine_results_rrf(retrieved_results_dict)
+        # ... (generate_answer(context_documents=combined_docs_for_context, ...))
+        # ... (display user and assistant messages)
 else:
     st.info("Please upload a PDF, DOCX, or TXT document to begin your session.") # Updated info message
 ```
 - Chat input is available only if a document has been successfully processed.
 - If a **user asks a question**:
-  1. **Formats recent chat history** (last `MAX_HISTORY_TURNS` turns) from `st.session_state.messages`.
-  2. Retrieves relevant document chunks using `find_related_documents`.
-  3. Generates an answer using `generate_answer`, now passing the `formatted_history` to it.
-  4. Displays the user's question and the assistant's response.
+  1. **Formats recent chat history**.
+  2. Retrieves results from both semantic and BM25 search using `find_related_documents`.
+  3. Combines these results using `combine_results_rrf` to get a ranked list of unique document chunks.
+  4. Generates an answer using `generate_answer`, passing the combined chunks as context and the formatted history.
+  5. Displays the user's question and the assistant's response.
 - An initial informational message prompts the user to upload a document of any supported type.
 
 ## **Summary**
 ### **Key Features:**
 - **Upload and process PDF, DOCX, and TXT documents.**
-- **Extract and index text efficiently.**
+- **Efficient text extraction and chunking.**
+- **Hybrid Search for Retrieval**: Combines semantic (vector) search with keyword-based (BM25) search, and fuses results using Reciprocal Rank Fusion (RRF) for improved relevance.
 - **Query documents using natural language, with conversation history for contextual follow-up questions.**
 - **Generate concise document summaries.**
 - **Extract relevant keywords.**

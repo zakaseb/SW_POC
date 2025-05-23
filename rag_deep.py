@@ -9,6 +9,7 @@ from langchain_ollama.llms import OllamaLLM
 from langchain_core.documents import Document as LangchainDocument
 import docx # For Document and opc.exceptions
 import pdfplumber # For pdfplumber.exceptions
+from rank_bm25 import BM25Okapi
 
 
 # ---------------------------------
@@ -79,6 +80,9 @@ st.markdown(
 # Global Configuration
 # ---------------------------------
 MAX_HISTORY_TURNS = 3 # Number of recent user/assistant turn pairs to include in history
+K_SEMANTIC = 5 # Number of results for semantic search
+K_BM25 = 5     # Number of results for BM25 search
+K_RRF_PARAM = 60 # Constant for Reciprocal Rank Fusion (RRF)
 
 PROMPT_TEMPLATE = """
 You are an expert research assistant. Use the provided document context and conversation history to answer the current query.
@@ -136,6 +140,10 @@ if "document_summary" not in st.session_state: # To store the generated summary
     st.session_state.document_summary = None
 if "document_keywords" not in st.session_state: # To store extracted keywords
     st.session_state.document_keywords = None
+if "bm25_index" not in st.session_state:
+    st.session_state.bm25_index = None
+if "bm25_corpus_chunks" not in st.session_state:
+    st.session_state.bm25_corpus_chunks = []
 
 
 # ---------------------------------
@@ -254,19 +262,100 @@ def index_documents(document_chunks):
 
 def find_related_documents(query):
     """
-    Perform a similarity search in the vector store for the given query.
+    Perform both semantic and BM25 search to find related document chunks.
+    Returns a dictionary with 'semantic_results' and 'bm25_results'.
     """
+    semantic_docs = []
+    bm25_retrieved_chunks = []
+
     if not query or not query.strip(): # Check for empty query
         st.warning("Search query is empty. Please enter a query to find related documents.")
-        return []
+        return {"semantic_results": semantic_docs, "bm25_results": bm25_retrieved_chunks}
+
     if not st.session_state.document_processed:
         st.warning("No document has been processed yet. Please upload and process a document before searching.")
-        return []
+        return {"semantic_results": semantic_docs, "bm25_results": bm25_retrieved_chunks}
+
+    # 1. Semantic Search (Vector Search)
     try:
-        return st.session_state.DOCUMENT_VECTOR_DB.similarity_search(query)
+        # Ensure K_SEMANTIC doesn't exceed available docs if the library doesn't handle it
+        # similarity_search(k=...) usually handles this, but good to be mindful
+        semantic_docs = st.session_state.DOCUMENT_VECTOR_DB.similarity_search(query, k=K_SEMANTIC)
+        print(f"Semantic search found {len(semantic_docs)} results.")
     except Exception as e:
-        st.error(f"An error occurred during similarity search for '{st.session_state.get('uploaded_filename', 'the file')}'. Details: {e}")
-        return []
+        st.error(f"An error occurred during semantic search for '{st.session_state.get('uploaded_filename', 'the file')}'. Details: {e}")
+        semantic_docs = [] # Ensure it's an empty list on error
+
+    # 2. BM25 Search
+    if st.session_state.get("bm25_index") and st.session_state.get("bm25_corpus_chunks"):
+        try:
+            tokenized_query = query.lower().split(" ")
+            
+            all_doc_scores = st.session_state.bm25_index.get_scores(tokenized_query)
+            
+            # Get indices of top k_bm25 scores
+            num_bm25_chunks = len(st.session_state.bm25_corpus_chunks)
+            num_docs_to_consider = min(K_BM25, num_bm25_chunks)
+            
+            # Ensure we only process valid indices and scores
+            top_n_indices = sorted(
+                [i for i, score in enumerate(all_doc_scores) if score > 0], # Consider only positive scores
+                key=lambda i: all_doc_scores[i], 
+                reverse=True
+            )[:num_docs_to_consider]
+            
+            bm25_retrieved_chunks = [st.session_state.bm25_corpus_chunks[i] for i in top_n_indices]
+            print(f"BM25 search found {len(bm25_retrieved_chunks)} results with positive scores.")
+
+        except Exception as e:
+            st.error(f"An error occurred during BM25 search for '{st.session_state.get('uploaded_filename', 'the file')}'. Details: {e}")
+            bm25_retrieved_chunks = [] # Ensure it's an empty list on error
+    else:
+        print("BM25 index not available. Skipping BM25 search.")
+        bm25_retrieved_chunks = []
+
+    return {"semantic_results": semantic_docs, "bm25_results": bm25_retrieved_chunks}
+
+def combine_results_rrf(search_results_dict, k_param=K_RRF_PARAM):
+    """
+    Combines search results from different methods using Reciprocal Rank Fusion (RRF).
+    Args:
+        search_results_dict (dict): A dictionary where keys are search method names (e.g., "semantic_results", "bm25_results")
+                                     and values are lists of Langchain Document objects, ordered by relevance.
+        k_param (int): The RRF k parameter (default is K_RRF_PARAM).
+    Returns:
+        list: A de-duplicated list of Langchain Document objects, sorted by RRF score.
+    """
+    doc_to_score = {}  # Maps page_content to its RRF score
+    doc_objects = {}   # Maps page_content to the actual Document object
+
+    # Process semantic results
+    semantic_results = search_results_dict.get("semantic_results", [])
+    for i, doc in enumerate(semantic_results):
+        doc_id = doc.page_content  # Assuming page_content is a unique identifier for a chunk
+        if doc_id not in doc_objects:
+            doc_objects[doc_id] = doc
+        score = 1.0 / (k_param + i + 1) # Rank is i+1
+        doc_to_score[doc_id] = doc_to_score.get(doc_id, 0) + score
+
+    # Process BM25 results
+    bm25_results = search_results_dict.get("bm25_results", [])
+    for i, doc in enumerate(bm25_results):
+        doc_id = doc.page_content
+        if doc_id not in doc_objects:
+            doc_objects[doc_id] = doc
+        score = 1.0 / (k_param + i + 1) # Rank is i+1
+        doc_to_score[doc_id] = doc_to_score.get(doc_id, 0) + score
+            
+    # Sort documents by RRF score in descending order
+    sorted_doc_ids = sorted(doc_to_score.keys(), key=lambda x: doc_to_score[x], reverse=True)
+    
+    # Get the final de-duplicated list of Document objects
+    final_combined_docs = [doc_objects[doc_id] for doc_id in sorted_doc_ids]
+    
+    print(f"RRF combined {len(semantic_results)} semantic and {len(bm25_results)} BM25 results into {len(final_combined_docs)} unique docs.")
+    return final_combined_docs
+
 
 def generate_answer(user_query, context_documents, conversation_history=""):
     """
@@ -274,8 +363,11 @@ def generate_answer(user_query, context_documents, conversation_history=""):
     """
     if not user_query or not user_query.strip():
         return "Your question is empty. Please type a question to get an answer."
-    if not context_documents:
+    
+    # Check if context_documents is a list and not empty
+    if not context_documents or not isinstance(context_documents, list) or len(context_documents) == 0:
         return "I couldn't find relevant information in the document to answer your query. Please try rephrasing your question or ensure the document contains the relevant topics."
+        
     try:
         context_text = "\n\n".join([doc.page_content for doc in context_documents])
         if not context_text.strip(): # Edge case: context_documents exist but have no content
@@ -378,6 +470,8 @@ with st.sidebar:
         st.session_state.raw_documents = [] # Clear raw documents
         st.session_state.document_summary = None # Clear summary
         st.session_state.document_keywords = None # Clear keywords
+        st.session_state.bm25_index = None # Clear BM25 index
+        st.session_state.bm25_corpus_chunks = [] # Clear BM25 corpus
         st.success("Document and chat reset. You can now upload a new document.")
         st.rerun()
 
@@ -450,6 +544,8 @@ if uploaded_file:
         st.session_state.raw_documents = [] # Clear raw documents for new file
         st.session_state.document_summary = None # Clear previous summary
         st.session_state.document_keywords = None # Clear previous keywords
+        st.session_state.bm25_index = None # Clear BM25 index for new file
+        st.session_state.bm25_corpus_chunks = [] # Clear BM25 corpus for new file
         if 'uploaded_filename' in st.session_state:
              del st.session_state.uploaded_filename
 
@@ -461,13 +557,27 @@ if uploaded_file:
                 if raw_docs:
                     st.session_state.raw_documents = raw_docs # Store raw documents
                     processed_chunks = chunk_documents(raw_docs)
-                    if processed_chunks: # This implies raw_docs were successfully loaded and chunked
-                        index_documents(processed_chunks) # Errors handled within
-                        if st.session_state.document_processed:
-                             st.success(f"✅ Document '{uploaded_file.name}' processed and indexed successfully! You can now ask questions or use analysis tools in the sidebar.")
+                    if processed_chunks: 
+                        # Vector Indexing (Existing)
+                        index_documents(processed_chunks) 
+
+                        # BM25 Indexing (New)
+                        if st.session_state.document_processed: # Proceed only if vector indexing was successful
+                            try:
+                                corpus_texts = [chunk.page_content for chunk in processed_chunks]
+                                tokenized_corpus = [doc.lower().split(" ") for doc in corpus_texts]
+                                
+                                st.session_state.bm25_index = BM25Okapi(tokenized_corpus)
+                                st.session_state.bm25_corpus_chunks = processed_chunks
+                                print(f"BM25 index created for {st.session_state.get('uploaded_filename', 'document')}")
+                                # Success message updated to reflect both types of indexing
+                                st.success(f"✅ Document '{uploaded_file.name}' processed and indexed (Vector & BM25) successfully! You can now ask questions or use analysis tools in the sidebar.")
+                            except Exception as e:
+                                st.error(f"Failed to create BM25 index for '{uploaded_file.name}'. Details: {e}")
+                                # Potentially mark BM25 indexing as failed if needed for other logic
                         else:
                             # Error message would have been shown by index_documents or preceding functions
-                            st.error(f"Document '{uploaded_file.name}' processed but failed to index. Please see error messages above.")
+                            st.error(f"Document '{uploaded_file.name}' processed but failed during vector indexing. BM25 indexing skipped.")
                     # else: Error message would have been shown by chunk_documents or load_document
                 # else: Error message would have been shown by load_document
             # else: Error message would have been shown by save_uploaded_file
@@ -502,12 +612,19 @@ if st.session_state.document_processed:
                 st.write(user_input)
 
             with st.spinner("Thinking..."):
-                relevant_docs = find_related_documents(user_input) # Handles empty query check
-                ai_response = generate_answer(
-                    user_query=user_input, 
-                    context_documents=relevant_docs,
-                    conversation_history=formatted_history
-                )
+                retrieved_results_dict = find_related_documents(user_input) 
+                
+                # Combine results using RRF
+                combined_docs_for_context = combine_results_rrf(retrieved_results_dict)
+                
+                if not combined_docs_for_context:
+                    ai_response = "I could not find relevant sections in the document to answer your question. Please ensure the document contains information related to your query or try rephrasing."
+                else:
+                    ai_response = generate_answer(
+                        user_query=user_input, 
+                        context_documents=combined_docs_for_context,
+                        conversation_history=formatted_history
+                    )
             
             st.session_state.messages.append({"role": "assistant", "content": ai_response, "avatar": "🤖"})
             with st.chat_message("assistant", avatar="🤖"):

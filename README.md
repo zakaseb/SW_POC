@@ -13,8 +13,8 @@
 - **Document Processing:**  
   The assistant extracts text from the uploaded document, splits it into manageable chunks, and indexes the content using embeddings. This enables efficient retrieval and querying of the document's information.
 
-- **Intelligent Querying with Conversation History:**  
-  Ask questions about the document's content and receive concise, contextually relevant answers. The AI uses a language model to generate responses based on the document's context and now considers recent conversation history (last 3 turns) to better understand follow-up questions.
+- **Intelligent Querying with Hybrid Search & Conversation History:**  
+  Ask questions about the document's content and receive concise, contextually relevant answers. The AI uses a language model to generate responses based on the document's context. It now employs a hybrid search strategy, combining semantic understanding (vector search) with BM25 keyword matching, and results are fused using Reciprocal Rank Fusion (RRF) for enhanced retrieval accuracy. Recent conversation history (last 3 turns) is also considered to better understand follow-up questions.
 
 - **Document Summarization:**  
   Generate a concise summary of the entire document with a single click. The summary is displayed in the sidebar, providing a quick overview of the document's main points.
