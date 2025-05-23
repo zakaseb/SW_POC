@@ -27,6 +27,8 @@ MAX_HISTORY_TURNS = 3 # Number of recent user/assistant turn pairs to include in
 K_SEMANTIC = 5 # Number of results for semantic search
 K_BM25 = 5     # Number of results for BM25 search
 K_RRF_PARAM = 60 # Constant for Reciprocal Rank Fusion (RRF)
+TOP_K_FOR_RERANKER = 10 # Number of docs from hybrid search to pass to reranker
+FINAL_TOP_N_FOR_CONTEXT = 3 # Number of docs reranker should return for LLM context
 
 PROMPT_TEMPLATE = """
 You are an expert research assistant. Use the provided document context and conversation history to answer the current query.
@@ -57,30 +59,37 @@ os.makedirs(PDF_STORAGE_PATH, exist_ok=True)
 # Cached functions to load models
 @st.cache_resource
 def get_embedding_model():
-    # print("Loading Embedding Model...") # For debugging/verifying cache
-    return OllamaEmbeddings(model="deepseek-r1:1.5b")
+    # ... (OllamaEmbeddings setup)
+    return OllamaEmbeddings(model="deepseek-r1:1.5b", base_url=OLLAMA_BASE_URL)
 
 @st.cache_resource
 def get_language_model():
-    # print("Loading Language Model...") # For debugging/verifying cache
-    return OllamaLLM(model="deepseek-r1:1.5b")
+    # ... (OllamaLLM setup)
+    return OllamaLLM(model="deepseek-r1:1.5b", base_url=OLLAMA_BASE_URL)
+
+@st.cache_resource
+def get_reranker_model(model_name='cross-encoder/ms-marco-MiniLM-L-6-v2'):
+    # ... (CrossEncoder setup)
+    return CrossEncoder(model_name)
 
 EMBEDDING_MODEL = get_embedding_model()
 LANGUAGE_MODEL = get_language_model()
+RERANKER_MODEL = get_reranker_model() # RERANKER_MODEL_NAME is used by default
 ```
-- Loads **DeepSeek** models using `@st.cache_resource` for performance. This means models are loaded once and reused across sessions/reruns.
-  - `OllamaEmbeddings` → Converts text into vector embeddings for semantic search.
-  - `OllamaLLM` → Generates responses to user queries, summaries, and keywords.
+- Loads **DeepSeek** models for embeddings and language generation, and a **CrossEncoder model** (`ms-marco-MiniLM-L-6-v2`) for re-ranking. All models are loaded using `@st.cache_resource` for performance.
+  - `OllamaEmbeddings` → Converts text into vector embeddings.
+  - `OllamaLLM` → Generates responses, summaries, and keywords.
+  - `CrossEncoder` → Re-ranks search results for improved relevance.
 
 ```python
 # Session state variables like DOCUMENT_VECTOR_DB, messages, document_processed, 
-# raw_documents, document_summary, document_keywords are initialized if not present.
+# raw_documents, document_summary, document_keywords, bm25_index, bm25_corpus_chunks are initialized if not present.
 if "DOCUMENT_VECTOR_DB" not in st.session_state:
     st.session_state.DOCUMENT_VECTOR_DB = InMemoryVectorStore(EMBEDDING_MODEL)
-# ... (other session state initializations for messages, document_processed, raw_documents, etc.)
+# ... (other session state initializations)
 ```
 - Uses **Streamlit session state** extensively to store:
-  - The vector database (`DOCUMENT_VECTOR_DB`).
+  - Vector database (`DOCUMENT_VECTOR_DB`), BM25 index (`bm25_index`), and related corpus chunks (`bm25_corpus_chunks`).
   - Chat messages (`messages`).
   - Status flags (`document_processed`, `uploaded_file_key`).
   - Loaded document content (`raw_documents`, `uploaded_filename`).
@@ -145,12 +154,23 @@ def find_related_documents(query):
 def combine_results_rrf(search_results_dict, k_param=K_RRF_PARAM):
     # ... (calculates RRF scores and sorts documents)
 ```
-- This new function takes the results from `find_related_documents`.
+- This function takes the results from `find_related_documents`.
 - It combines the document lists from semantic and BM25 searches using **Reciprocal Rank Fusion (RRF)**.
 - RRF assigns a score to each document based on its rank in each result list (score = 1 / (k_param + rank)). Scores for the same document from different lists are summed.
-- The final list of documents is de-duplicated and sorted by the combined RRF score, providing a more robustly ranked set of context chunks.
+- The final list of documents is de-duplicated and sorted by the combined RRF score.
 
-#### **3.7 Generate an Answer**
+#### **3.7 Re-rank Documents (CrossEncoder)**
+```python
+def rerank_documents(query: str, documents: list, model: CrossEncoder, top_n: int = 3):
+    # ... (uses model.predict to get scores and re-sorts documents)
+```
+- This new function takes the user query and the list of documents (typically the output of `combine_results_rrf`).
+- It uses the pre-loaded `CrossEncoder` model (`RERANKER_MODEL`) to predict a relevance score for each (query, document_content) pair.
+- The documents are then re-sorted based on these new scores, and the top `FINAL_TOP_N_FOR_CONTEXT` documents are returned.
+- This step aims to further refine the relevance of documents before they are used as context for the LLM.
+- Includes fallbacks if the model is not loaded or if prediction fails.
+
+#### **3.8 Generate an Answer**
 ```python
 def generate_answer(user_query, context_documents, conversation_history=""):
     # ... (handles empty query/context, empty LLM response, improved error messages)
@@ -247,8 +267,16 @@ if st.session_state.document_processed:
     if user_input:
         # ... (logic to format recent st.session_state.messages into formatted_history)
         retrieved_results_dict = find_related_documents(user_input)
-        combined_docs_for_context = combine_results_rrf(retrieved_results_dict)
-        # ... (generate_answer(context_documents=combined_docs_for_context, ...))
+        hybrid_search_docs = combine_results_rrf(retrieved_results_dict)
+        if hybrid_search_docs:
+            docs_for_reranking = hybrid_search_docs[:TOP_K_FOR_RERANKER]
+            if RERANKER_MODEL:
+                final_context_docs = rerank_documents(user_input, docs_for_reranking, RERANKER_MODEL, top_n=FINAL_TOP_N_FOR_CONTEXT)
+            else: # Fallback
+                final_context_docs = docs_for_reranking[:FINAL_TOP_N_FOR_CONTEXT]
+        else:
+            final_context_docs = []
+        # ... (generate_answer(context_documents=final_context_docs, ...))
         # ... (display user and assistant messages)
 else:
     st.info("Please upload a PDF, DOCX, or TXT document to begin your session.") # Updated info message
@@ -257,23 +285,28 @@ else:
 - If a **user asks a question**:
   1. **Formats recent chat history**.
   2. Retrieves results from both semantic and BM25 search using `find_related_documents`.
-  3. Combines these results using `combine_results_rrf` to get a ranked list of unique document chunks.
-  4. Generates an answer using `generate_answer`, passing the combined chunks as context and the formatted history.
-  5. Displays the user's question and the assistant's response.
+  3. Combines these results using `combine_results_rrf` to get a ranked list of unique document chunks (`hybrid_search_docs`).
+  4. The top `TOP_K_FOR_RERANKER` documents from this list are then passed to `rerank_documents`.
+  5. `rerank_documents` uses the CrossEncoder model to re-score and sort these documents, returning the top `FINAL_TOP_N_FOR_CONTEXT`.
+  6. This final, re-ranked list is used as context for `generate_answer`.
+  7. Displays the user's question and the assistant's response.
 - An initial informational message prompts the user to upload a document of any supported type.
 
 ## **Summary**
 ### **Key Features:**
 - **Upload and process PDF, DOCX, and TXT documents.**
 - **Efficient text extraction and chunking.**
-- **Hybrid Search for Retrieval**: Combines semantic (vector) search with keyword-based (BM25) search, and fuses results using Reciprocal Rank Fusion (RRF) for improved relevance.
+- **Advanced Retrieval Pipeline**:
+  - **Hybrid Search**: Combines semantic (vector) search with keyword-based (BM25) search.
+  - **Reciprocal Rank Fusion (RRF)**: Merges results from hybrid search.
+  - **Re-ranking**: Further refines relevance using a CrossEncoder model (`ms-marco-MiniLM-L-6-v2`).
 - **Query documents using natural language, with conversation history for contextual follow-up questions.**
 - **Generate concise document summaries.**
 - **Extract relevant keywords.**
 - **Chat interface for interaction.**
 - **Controls for clearing chat and resetting documents in the sidebar.**
 - **Improved error handling and user feedback throughout the application.**
-- **Performance optimization with model caching (`@st.cache_resource` for Ollama models).**
+- **Performance optimization with model caching (`@st.cache_resource` for Ollama, Embedding, and Re-ranker models).**
 
-This app is a **powerful research assistant** that leverages **LangChain, Ollama (with DeepSeek models), and Streamlit** to provide an **interactive, AI-powered document analysis** experience for multiple file formats.
+This app is a **powerful research assistant** that leverages **LangChain, Ollama (with DeepSeek models), Sentence Transformers, and Streamlit** to provide an **interactive, AI-powered document analysis** experience for multiple file formats.
 The screenshots in this document may not reflect the latest UI with sidebar controls, but the textual descriptions are updated.
