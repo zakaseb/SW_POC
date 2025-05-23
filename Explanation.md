@@ -23,16 +23,25 @@ st.markdown(
 
 ### **2. Global Configuration**
 ```python
+MAX_HISTORY_TURNS = 3 # Number of recent user/assistant turn pairs to include in history
+
 PROMPT_TEMPLATE = """
-You are an expert research assistant. Use the provided context to answer the query. 
+You are an expert research assistant. Use the provided document context and conversation history to answer the current query.
+If the query is a follow-up question, use the conversation history to understand the context.
 If unsure, state that you don't know. Be concise and factual (max 3 sentences).
 
-Query: {user_query} 
-Context: {document_context} 
+Conversation History (if any):
+{conversation_history}
+
+Document Context:
+{document_context}
+
+Current Query: {user_query}
 Answer:
 """
 ```
-- Defines a **prompt template** that structures how the AI should respond.
+- Defines a **prompt template** (`PROMPT_TEMPLATE`) that structures how the AI should respond. It now includes placeholders for `conversation_history`, `document_context`, and `user_query`.
+- `MAX_HISTORY_TURNS` controls how many pairs of user/assistant messages are included in the history.
 
 ```python
 PDF_STORAGE_PATH = "document_store/pdfs/" # This path is used for all uploaded file types.
@@ -126,12 +135,13 @@ def find_related_documents(query):
 
 #### **3.6 Generate an Answer**
 ```python
-def generate_answer(user_query, context_documents):
+def generate_answer(user_query, context_documents, conversation_history=""):
     # ... (handles empty query/context, empty LLM response, improved error messages)
 ```
 - **Constructs** context from retrieved document chunks.
-- **Formats** the prompt using `PROMPT_TEMPLATE`.
+- **Formats** the prompt using `PROMPT_TEMPLATE`, now including `conversation_history`, `document_context`, and `user_query`.
 - **Generates a response** using the cached `LANGUAGE_MODEL`.
+- The `conversation_history` parameter allows the LLM to consider recent turns for better follow-up question understanding.
 
 #### **3.7 Generate Summary**
 ```python
@@ -218,23 +228,25 @@ if uploaded_file:
 if st.session_state.document_processed:
     user_input = st.chat_input(...)
     if user_input:
-        # ... (append to messages, get relevant_docs, generate_answer)
+        # ... (logic to format recent st.session_state.messages into formatted_history)
+        # ... (append to messages, get relevant_docs, generate_answer(..., conversation_history=formatted_history))
         # ... (display user and assistant messages, with generate_answer handling its own errors/warnings)
 else:
     st.info("Please upload a PDF, DOCX, or TXT document to begin your session.") # Updated info message
 ```
 - Chat input is available only if a document has been successfully processed.
 - If a **user asks a question**:
-  1. Retrieves relevant document chunks using `find_related_documents`.
-  2. Generates an answer using `generate_answer`.
-  3. Displays the user's question and the assistant's response (which might be an answer or an error/warning string from `generate_answer`).
+  1. **Formats recent chat history** (last `MAX_HISTORY_TURNS` turns) from `st.session_state.messages`.
+  2. Retrieves relevant document chunks using `find_related_documents`.
+  3. Generates an answer using `generate_answer`, now passing the `formatted_history` to it.
+  4. Displays the user's question and the assistant's response.
 - An initial informational message prompts the user to upload a document of any supported type.
 
 ## **Summary**
 ### **Key Features:**
 - **Upload and process PDF, DOCX, and TXT documents.**
 - **Extract and index text efficiently.**
-- **Query documents using natural language.**
+- **Query documents using natural language, with conversation history for contextual follow-up questions.**
 - **Generate concise document summaries.**
 - **Extract relevant keywords.**
 - **Chat interface for interaction.**

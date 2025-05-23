@@ -11,8 +11,10 @@ from rag_deep import (
     load_document,
     generate_summary,
     generate_keywords,
-    SUMMARIZATION_PROMPT_TEMPLATE, # Import for checking prompt content
-    KEYWORD_EXTRACTION_PROMPT_TEMPLATE # Import for checking prompt content
+    generate_answer, # Added this
+    PROMPT_TEMPLATE as RAG_PROMPT_TEMPLATE, # Import for checking prompt content for generate_answer
+    SUMMARIZATION_PROMPT_TEMPLATE,
+    KEYWORD_EXTRACTION_PROMPT_TEMPLATE
 )
 from langchain_core.documents import Document as LangchainDocument
 from docx.opc.exceptions import PackageNotFoundError
@@ -217,84 +219,96 @@ def test_generate_keywords_empty_input(capsys):
     assert "Document content is empty or contains only whitespace. Cannot extract keywords." in captured_ws.out
 
 
-# Note: chunk_documents and index_documents involve more complex Langchain objects
-# and session state. Testing them thoroughly would require more elaborate mocking
-# of Streamlit's session state and the vector store, or integration-style tests.
-# For this subtask, focus is on load_document and LLM utility functions.
+# --- Tests for generate_answer ---
 
-# To run these tests:
-# 1. Ensure pytest and pytest-mock are installed: pip install pytest pytest-mock
-# 2. Navigate to the root directory of the project in the terminal.
-# 3. Run: pytest
-#
-# If rag_deep.py uses Streamlit elements like st.error directly in the tested functions,
-# these will print to stdout/stderr during tests. capsys fixture is used to capture this.
-# Ideally, such UI calls might be separated from core logic for easier testing,
-# but for now, capturing output is a practical approach.
-#
-# The `sys.path.insert` is a common way to handle imports in simple test structures.
-# For larger projects, using Python packaging (setup.py or pyproject.toml)
-# and installing the package in editable mode (`pip install -e .`) is recommended.
-#
-# The `autouse=True` fixture `setup_test_environment` ensures dummy files are ready.
-# `tmp_path_factory` is a pytest fixture for creating temporary directories.
-# `pdfplumber.exceptions.PDFSyntaxError` is imported for the specific PDF error test.
-# `docx.opc.exceptions.PackageNotFoundError` is imported for the specific DOCX error test.
-#
-# Mocking strategy for LLM calls:
-# The functions generate_summary and generate_keywords use a LangChain Expression Language (LCEL) chain:
-# `prompt_template | LANGUAGE_MODEL`
-# Then `.invoke()` is called on this chain.
-# To test this, we mock `rag_deep.LANGUAGE_MODEL` (the OllamaLLM instance).
-# We replace it with a `MagicMock` instance.
-# Then, we set the `return_value` of `mock_llm_instance.invoke` to our desired output (e.g., "test summary").
-# This effectively simulates the LLM part of the chain returning a specific value.
-# We also check `call_args` on `mock_llm_instance.invoke` to ensure the LLM was called with the expected input.
-# This approach tests the logic within `generate_summary/keywords` (prompt creation, handling LLM output/errors)
-# without making actual LLM calls.
-#
-# The `capsys` fixture captures stdout/stderr, which is useful because the Streamlit functions
-# like `st.error` and `st.warning` write to these streams.
-# The tests check if these messages are displayed as expected.
-#
-# The tests for empty files check for the warning printed by `st.warning` in `load_document`.
-# The tests for corrupted/non-existent files check for `st.error` messages.
-#
-# A note about `sys.path.insert`: this is to make sure `rag_deep.py` can be found.
-# In a more complex project, you'd typically have a `src` layout or install the package.
-# For this context, it's a straightforward way to enable the import.
-#
-# Global empty file paths are updated by the fixture for consistency.
-# Sample files are created if they don't exist by the fixture, primarily for robust local testing.
-# In a CI environment, these files should be checked into the repository.
-# The dummy files created by tmp_path_factory are session-scoped and cleaned up automatically.
-#
-# For `test_generate_summary_success` and `test_generate_keywords_success`, the assertion
-# on `mock_llm_instance.invoke.call_args` checks the `kwargs` passed to the `invoke` method of the
-# *mocked LLM instance*. This is because the LCEL chain `prompt | LANGUAGE_MODEL` will ultimately
-# call `LANGUAGE_MODEL.invoke(formatted_prompt_value)`. The `formatted_prompt_value` is a dictionary-like
-# object where keys are input variables from the prompt template. So, we check if "document_text"
-# (the input variable in our templates) is present in these kwargs and has the correct value.
-# This confirms our function correctly passes the input text through the prompt to the LLM.
-#
-# One specific import: `from docx import Document as DocxCreatorDocument` in the fixture is to
-# avoid a name collision with `from langchain_core.documents import Document as LangchainDocument`
-# used in the main test scope.
-#
-# The `pdfplumber.exceptions` needs `pdfplumber` to be installed, which is in `requirements.txt`.
-# Similarly, `docx.opc.exceptions` needs `python-docx`.
-#
-# The tests cover:
-# - Successful loading of .txt and .docx.
-# - Handling of empty .txt and .docx files (expect warnings).
-# - Handling of unsupported file types.
-# - Handling of non-existent files.
-# - Handling of corrupted .docx files.
-# - Handling of .txt files with encoding errors.
-# - Handling of corrupted .pdf files (mocking PDF specific error).
-# - Successful summary and keyword generation (mocking LLM).
-# - LLM failures during summary and keyword generation.
-# - Empty input for summary and keyword generation.Okay, I have created `tests/test_rag_deep.py` with the unit tests in the previous turn.
+@patch('rag_deep.LANGUAGE_MODEL')
+def test_generate_answer_with_history(mock_llm_invoke):
+    mock_llm_instance = MagicMock()
+    mock_llm_instance.invoke.return_value = "Mocked response considering history."
+    
+    user_query = "What about the second point?"
+    # Create a mock LangchainDocument object
+    mock_doc = LangchainDocument(page_content="Some context about the second point.")
+    context_documents = [mock_doc]
+    conversation_history_str = "User: What was the first point?\nAssistant: The first point was ABC."
+
+    with patch('rag_deep.LANGUAGE_MODEL', mock_llm_instance):
+        response = generate_answer(user_query, context_documents, conversation_history=conversation_history_str)
+
+    assert response == "Mocked response considering history."
+    
+    # Check if the prompt sent to the LLM (via invoke) contained the history
+    assert mock_llm_instance.invoke.call_count == 1
+    # The first argument to invoke is a dictionary representing the filled prompt
+    invoked_prompt_args = mock_llm_instance.invoke.call_args[0][0] 
+    
+    assert "conversation_history" in invoked_prompt_args
+    assert invoked_prompt_args["conversation_history"] == conversation_history_str
+    assert "user_query" in invoked_prompt_args
+    assert invoked_prompt_args["user_query"] == user_query
+    assert "document_context" in invoked_prompt_args
+    assert invoked_prompt_args["document_context"] == "Some context about the second point."
+
+
+@patch('rag_deep.LANGUAGE_MODEL')
+def test_generate_answer_without_history_uses_default(mock_llm_invoke):
+    mock_llm_instance = MagicMock()
+    mock_llm_instance.invoke.return_value = "Mocked response without history."
+
+    user_query = "What is this document about?"
+    mock_doc = LangchainDocument(page_content="This document is about testing.")
+    context_documents = [mock_doc]
+    
+    # Call generate_answer without providing conversation_history, relying on default
+    with patch('rag_deep.LANGUAGE_MODEL', mock_llm_instance):
+        response = generate_answer(user_query, context_documents)
+
+    assert response == "Mocked response without history."
+    assert mock_llm_instance.invoke.call_count == 1
+    invoked_prompt_args = mock_llm_instance.invoke.call_args[0][0]
+
+    assert "conversation_history" in invoked_prompt_args
+    assert invoked_prompt_args["conversation_history"] == "" # Default value is an empty string
+    assert invoked_prompt_args["user_query"] == user_query
+    assert invoked_prompt_args["document_context"] == "This document is about testing."
+
+
+@patch('rag_deep.LANGUAGE_MODEL')
+def test_generate_answer_llm_failure(mock_llm_invoke, capsys):
+    mock_llm_instance = MagicMock()
+    mock_llm_instance.invoke.side_effect = Exception("LLM answer error")
+    
+    user_query = "A query that causes error."
+    mock_doc = LangchainDocument(page_content="Some context.")
+    context_documents = [mock_doc]
+
+    with patch('rag_deep.LANGUAGE_MODEL', mock_llm_instance):
+        response = generate_answer(user_query, context_documents)
+
+    assert "I'm sorry, but I encountered an error while trying to generate a response." in response
+    captured = capsys.readouterr()
+    assert "An error occurred while generating the answer using the AI model. Details: LLM answer error" in captured.out
+
+
+def test_generate_answer_empty_query(capsys):
+    mock_doc = LangchainDocument(page_content="Some context.")
+    context_documents = [mock_doc]
+    response = generate_answer("", context_documents)
+    assert response == "Your question is empty. Please type a question to get an answer."
+
+def test_generate_answer_empty_context_docs(capsys):
+    user_query = "A valid query."
+    response = generate_answer(user_query, []) # Empty list of context_documents
+    assert response == "I couldn't find relevant information in the document to answer your query."
+
+
+# General Notes (can be kept or removed from final file)
+# - The `sys.path.insert` is for local testing convenience.
+# - `setup_test_environment` fixture prepares dummy files.
+# - `capsys` is used for capturing Streamlit's st.error/st.warning outputs.
+# - LLM interactions are mocked using `unittest.mock.patch` and `MagicMock`.
+# - Specific Langchain Document objects are created for context in `generate_answer` tests.
+# - The tests for `generate_answer` now specifically check how `conversation_history` is passed.
 The test file includes:
 *   Setup for test data paths and creation of dummy/empty files for specific test cases using a pytest fixture (`setup_test_environment`).
 *   **Tests for `load_document`**:

@@ -78,12 +78,20 @@ st.markdown(
 # ---------------------------------
 # Global Configuration
 # ---------------------------------
+MAX_HISTORY_TURNS = 3 # Number of recent user/assistant turn pairs to include in history
+
 PROMPT_TEMPLATE = """
-You are an expert research assistant. Use the provided context to answer the query. 
+You are an expert research assistant. Use the provided document context and conversation history to answer the current query.
+If the query is a follow-up question, use the conversation history to understand the context.
 If unsure, state that you don't know. Be concise and factual (max 3 sentences).
 
-Query: {user_query} 
-Context: {document_context} 
+Conversation History (if any):
+{conversation_history}
+
+Document Context:
+{document_context}
+
+Current Query: {user_query}
 Answer:
 """
 
@@ -260,9 +268,9 @@ def find_related_documents(query):
         st.error(f"An error occurred during similarity search for '{st.session_state.get('uploaded_filename', 'the file')}'. Details: {e}")
         return []
 
-def generate_answer(user_query, context_documents):
+def generate_answer(user_query, context_documents, conversation_history=""):
     """
-    Generate an answer based on the user query and context documents.
+    Generate an answer based on the user query, context documents, and conversation history.
     """
     if not user_query or not user_query.strip():
         return "Your question is empty. Please type a question to get an answer."
@@ -272,9 +280,16 @@ def generate_answer(user_query, context_documents):
         context_text = "\n\n".join([doc.page_content for doc in context_documents])
         if not context_text.strip(): # Edge case: context_documents exist but have no content
              return "The relevant sections found in the document appear to be empty. Cannot generate an answer."
+        
         conversation_prompt = ChatPromptTemplate.from_template(PROMPT_TEMPLATE)
         response_chain = conversation_prompt | LANGUAGE_MODEL
-        response = response_chain.invoke({"user_query": user_query, "document_context": context_text})
+        
+        response = response_chain.invoke({
+            "user_query": user_query,
+            "document_context": context_text,
+            "conversation_history": conversation_history
+        })
+        
         if not response or not response.strip():
             return "The AI model returned an empty response. Please try rephrasing your question or try again later."
         return response
@@ -469,14 +484,30 @@ if st.session_state.document_processed:
         if not user_input.strip():
             st.warning("Please enter a question.")
         else:
+            # Format conversation history before adding the current user input
+            # The history should be what was there *before* this new user_input
+            # st.session_state.messages already contains the history up to the last assistant response.
+            num_messages_to_take = MAX_HISTORY_TURNS * 2 
+            chat_log_for_prompt = st.session_state.get("messages", [])[-num_messages_to_take:]
+
+            history_lines = []
+            for msg in chat_log_for_prompt:
+                role_label = "User" if msg["role"] == "user" else "Assistant"
+                history_lines.append(f"{role_label}: {msg['content']}")
+            formatted_history = "\n".join(history_lines)
+
+            # Add current user input to messages for display
             st.session_state.messages.append({"role": "user", "content": user_input})
             with st.chat_message("user"):
                 st.write(user_input)
 
             with st.spinner("Thinking..."):
                 relevant_docs = find_related_documents(user_input) # Handles empty query check
-                # generate_answer handles empty relevant_docs or empty user_input
-                ai_response = generate_answer(user_input, relevant_docs) 
+                ai_response = generate_answer(
+                    user_query=user_input, 
+                    context_documents=relevant_docs,
+                    conversation_history=formatted_history
+                )
             
             st.session_state.messages.append({"role": "assistant", "content": ai_response, "avatar": "🤖"})
             with st.chat_message("assistant", avatar="🤖"):
