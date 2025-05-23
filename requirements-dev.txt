@@ -1,0 +1,6 @@
+pytest>=7.0.0
+pytest-mock>=3.0.0
+python-docx>=1.1.0 # For creating test docx files
+# pdfplumber is in main requirements, needed for rag_deep import
+# streamlit is in main requirements, needed for rag_deep import
+# langchain related packages are in main requirements.
