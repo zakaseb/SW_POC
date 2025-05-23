@@ -3,21 +3,31 @@
 
 # DocuMind-AI: Intelligent Document Assistant
 
-**DocuMind-AI** is an AI-powered document assistant that allows users to upload PDF documents, process their contents, and interactively ask questions about them. Built with Streamlit and LangChain, it leverages embeddings and language models to provide concise, factual answers based on the document's context. This tool is ideal for researchers, students, and professionals who need to quickly extract insights from PDFs.
+**DocuMind-AI** is an AI-powered document assistant that allows users to upload documents (PDF, DOCX, TXT), process their contents, and interactively ask questions about them. Built with Streamlit and LangChain, it leverages embeddings and language models to provide concise, factual answers, summaries, and keyword extractions based on the document's context. This tool is ideal for researchers, students, and professionals who need to quickly extract insights from various document formats.
 
 ## Features
 
-- **PDF Upload:**  
-  Upload research papers, reference materials, or any PDF document directly through the interface. Supported file types include standard PDFs, with automatic text extraction for processing.
+- **Multi-Format Document Upload:**  
+  Upload research papers, reference materials, or any PDF, DOCX, or TXT document directly through the interface. The application automatically extracts text for processing from these formats.
 
 - **Document Processing:**  
-  The assistant extracts text from the uploaded PDF, splits it into manageable chunks, and indexes the content using embeddings. This enables efficient retrieval and querying of the document's information.
+  The assistant extracts text from the uploaded document, splits it into manageable chunks, and indexes the content using embeddings. This enables efficient retrieval and querying of the document's information.
 
 - **Intelligent Querying:**  
-  Ask questions about the document's content and receive concise, contextually relevant answers. The AI uses a language model to generate responses based on the document's context, ensuring factual accuracy.
+  Ask questions about the document's content and receive concise, contextually relevant answers. The AI uses a language model to generate responses based on the document's context.
+
+- **Document Summarization:**  
+  Generate a concise summary of the entire document with a single click. The summary is displayed in the sidebar, providing a quick overview of the document's main points.
+
+- **Keyword Extraction:**  
+  Extract key phrases and terms from the document. These keywords are displayed in the sidebar, helping to identify the document's core topics.
 
 - **Chat-Based UI:**  
   Interact with the assistant via a user-friendly chat interface, making it easy to ask follow-up questions or explore different aspects of the document.
+
+- **Enhanced User Controls (Sidebar):**
+  - **Clear Chat History:** Easily clear the current conversation.
+  - **Reset Document:** Remove the currently loaded document and chat, allowing you to start fresh with a new file.
 
 ## Installation
 
@@ -91,7 +101,7 @@ Using a virtual environment helps isolate project dependencies and avoid conflic
 
 ### 3. Install Dependencies
 
-With the virtual environment activated, install the required packages:
+With the virtual environment activated, install the required Python packages using the `requirements.txt` file. This file includes all necessary libraries, such as Streamlit, LangChain, and `python-docx` for handling various document formats.
 
 ```bash
 pip install -r requirements.txt
@@ -99,7 +109,7 @@ pip install -r requirements.txt
 
 ### 4. Create Required Directories
 
-Ensure that the `document_store/pdfs/` directory exists for storing uploaded PDFs. If not, create it:
+Ensure that the `document_store/pdfs/` directory exists for storing uploaded documents (though the name "pdfs" is a bit of a misnomer now, it's the current storage path). If not, create it:
 
 - **Windows:**
 
@@ -142,35 +152,41 @@ This will launch a local web server, typically at [http://localhost:8501](http:/
 
 ## Usage
 
-1. **Upload a PDF:**  
-   - Use the file uploader on the main page to select and upload your PDF document.  
-   - The assistant will process the PDF, extract its text, and prepare it for querying.  
-   - _Note:_ Large PDFs may take a few moments to process.
+1. **Upload a Document:**  
+   - Use the file uploader on the main page to select and upload your PDF, DOCX, or TXT document.  
+   - The assistant will process the document, extract its text, and prepare it for querying.  
+   - _Note:_ Large documents may take a few moments to process.
 
 2. **Ask Questions:**  
    - Once the document is processed, a chat interface will appear.  
    - Type your questions into the chat input to ask about the document's content.  
-   - The assistant will analyze the document and provide concise answers based on its context.  
-   - You can ask follow-up questions or explore different topics within the document.
+   - The assistant will analyze the document and provide concise answers based on its context.
+
+3. **Use Sidebar Features:**
+   - **Summarize Document:** Click this button in the sidebar to get a concise summary of the document.
+   - **Extract Keywords:** Click this button to see a list of key terms from the document.
+   - **Clear Chat History / Reset Document:** Use these buttons to manage your session.
 
 ### Example
 
-1. Upload a research paper on machine learning.  
-2. Ask: "What is the main hypothesis of this paper?"  
-3. The assistant will extract and summarize the hypothesis from the document.  
-4. Follow up with: "What datasets were used in the experiments?"  
-5. The assistant will provide details about the datasets mentioned in the paper.
+1. Upload a DOCX research paper on climate change.
+2. Click "Summarize Document" to get a quick overview.
+3. Click "Extract Keywords" to see the main topics.
+4. Ask: "What are the primary mitigation strategies discussed?"  
+5. The assistant will extract and present the relevant information.  
+6. Follow up with: "What datasets support these findings?"  
+7. The assistant will provide details about the datasets mentioned.
 
 ## Troubleshooting
 
 - **Ollama Not Running:**  
   If you encounter errors related to the language model, ensure that Ollama is running locally. Start it with `ollama serve` in a separate terminal.
 
-- **PDF Processing Issues:**  
-  If the assistant fails to process a PDF, check that the file is not corrupted and that it contains extractable text (i.e., not scanned images).
+- **Document Processing Issues:**  
+  If the assistant fails to process a document, check that the file is not corrupted and that it contains extractable text (especially for PDFs). For DOCX and TXT files, ensure they are standard, readable formats. The application has improved error handling to provide more specific feedback.
 
 - **Performance Issues:**  
-  For large documents, processing may take longer. Consider splitting the document into smaller sections or increasing system resources.
+  For very large documents, processing may take longer. Model loading is cached for better performance after the initial startup.
 
 - **Dependency Conflicts:**  
   If you encounter issues with package installations, ensure that your virtual environment is activated and that you are using the correct Python version.
