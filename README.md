@@ -8,10 +8,10 @@
 ## Features
 
 - **Multi-Format Document Upload:**  
-  Upload research papers, reference materials, or any PDF, DOCX, or TXT document directly through the interface. The application automatically extracts text for processing from these formats.
+  Upload one or more research papers, reference materials, or any PDF, DOCX, or TXT documents directly through the interface. The application processes all uploaded documents simultaneously and automatically extracts text for processing from these formats.
 
 - **Document Processing:**  
-  The assistant extracts text from the uploaded document, splits it into manageable chunks, and indexes the content using embeddings. This enables efficient retrieval and querying of the document's information.
+  The assistant extracts text from all uploaded documents, splits it into manageable chunks, and indexes the combined content using embeddings. This enables efficient retrieval and querying of information across all provided documents.
 
 - **Intelligent Querying with Hybrid Search, Re-ranking & Conversation History:**  
   Ask questions about the document's content and receive concise, contextually relevant answers. The AI uses a language model to generate responses based on the document's context. It employs a sophisticated retrieval pipeline:
@@ -20,18 +20,20 @@
     3.  The top RRF results are then **re-ranked** using a CrossEncoder model (`ms-marco-MiniLM-L-6-v2`) to further refine relevance before being passed to the LLM.
   Recent conversation history (last 3 turns) is also considered to better understand follow-up questions.
 
-- **Document Summarization:**  
-  Generate a concise summary of the entire document with a single click. The summary is displayed in the sidebar, providing a quick overview of the document's main points.
+- **Content Summarization:**
+  Generate a concise summary of the combined textual content from all uploaded documents with a single click. The summary is displayed in the sidebar, providing a quick overview.
 
 - **Keyword Extraction:**  
-  Extract key phrases and terms from the document. These keywords are displayed in the sidebar, helping to identify the document's core topics.
+  Extract key phrases and terms from the combined content of all uploaded documents. These keywords are displayed in the sidebar, helping to identify core topics across the documents.
 
 - **Chat-Based UI:**  
   Interact with the assistant via a user-friendly chat interface, making it easy to ask follow-up questions or explore different aspects of the document.
 
 - **Enhanced User Controls (Sidebar):**
   - **Clear Chat History:** Easily clear the current conversation.
-  - **Reset Document:** Remove the currently loaded document and chat, allowing you to start fresh with a new file.
+  - **Reset All Documents & Chat:** Remove all currently loaded documents and chat history, allowing you to start fresh with new files.
+  - **Summarize Uploaded Content:** Generate a summary from the combined text of all processed documents.
+  - **Extract Keywords from Content:** Extract keywords from the combined text of all processed documents.
 
 ## Installation
 
@@ -111,9 +113,9 @@ With the virtual environment activated, install the required Python packages usi
 pip install -r requirements.txt
 ```
 
-### 4. Create Required Directories
+### 4. Create Required Directories (Default Path)
 
-Ensure that the `document_store/pdfs/` directory exists for storing uploaded documents (though the name "pdfs" is a bit of a misnomer now, it's the current storage path). If not, create it:
+By default, the application uses `document_store/pdfs/` for storing uploaded documents temporarily during processing. If this path is not configured differently via environment variables (see "Environment Variables" section below), ensure the directory exists. If not, create it:
 
 - **Windows:**
 
@@ -142,7 +144,7 @@ DocuMind-AI uses the Deepseek model through Ollama for embeddings and language m
      ollama pull deepseek-r1:1.5b
      ```
 
-   This command downloads the Deepseek model (version 1.5b) locally, which is required for generating embeddings and language model responses.
+   This command downloads the Deepseek model (version 1.5b by default, see Environment Variables to customize) locally, which is required for generating embeddings and language model responses. Ensure you pull any specific models you configure via environment variables.
 
 ### 6. Run the Application
 
@@ -156,30 +158,56 @@ This will launch a local web server, typically at [http://localhost:8501](http:/
 
 ## Usage
 
-1. **Upload a Document:**  
-   - Use the file uploader on the main page to select and upload your PDF, DOCX, or TXT document.  
-   - The assistant will process the document, extract its text, and prepare it for querying.  
-   - _Note:_ Large documents may take a few moments to process.
+1. **Upload Document(s):**
+   - Use the file uploader on the main page to select and upload one or more PDF, DOCX, or TXT documents.
+   - The assistant will process all uploaded documents, extract their text, and prepare the combined content for querying. A list of successfully processed filenames will be displayed.
+   - _Note:_ Large documents or a large number of documents may take some time to process.
 
 2. **Ask Questions:**  
-   - Once the document is processed, a chat interface will appear.  
-   - Type your questions into the chat input to ask about the document's content.  
-   - The assistant will analyze the document and provide concise answers based on its context.
+   - Once the documents are processed, a chat interface will appear.
+   - Type your questions into the chat input to ask about the content of the uploaded documents.
+   - The assistant will analyze the documents and provide concise answers based on their combined context.
 
 3. **Use Sidebar Features:**
-   - **Summarize Document:** Click this button in the sidebar to get a concise summary of the document.
-   - **Extract Keywords:** Click this button to see a list of key terms from the document.
-   - **Clear Chat History / Reset Document:** Use these buttons to manage your session.
+   - **Summarize Uploaded Content:** Click this button in the sidebar to get a concise summary of all uploaded documents.
+   - **Extract Keywords from Content:** Click this button to see a list of key terms from all documents.
+   - **Clear Chat History / Reset All Documents & Chat:** Use these buttons to manage your session.
 
 ### Example
 
-1. Upload a DOCX research paper on climate change.
-2. Click "Summarize Document" to get a quick overview.
-3. Click "Extract Keywords" to see the main topics.
-4. Ask: "What are the primary mitigation strategies discussed?"  
-5. The assistant will extract and present the relevant information.  
-6. Follow up with: "What datasets support these findings?"  
-7. The assistant will provide details about the datasets mentioned.
+1. Upload a DOCX research paper on climate change and a PDF containing supplementary data.
+2. The UI will confirm both documents are processed.
+3. Click "Summarize Uploaded Content" to get a quick overview of the combined information.
+4. Click "Extract Keywords from Content" to see the main topics from both documents.
+5. Ask: "What are the primary mitigation strategies discussed in the research paper?"
+6. The assistant will extract and present the relevant information.
+7. Follow up with: "What datasets support these findings, considering the supplementary PDF?"
+8. The assistant will provide details about the datasets mentioned across the relevant documents.
+
+## Environment Variables
+
+The application can be configured using the following environment variables:
+
+- **`OLLAMA_BASE_URL`**: The base URL for the Ollama API.
+  - Default: `http://localhost:11434`
+  - Example: `http://my-ollama-server:11434`
+- **`OLLAMA_EMBEDDING_MODEL_NAME`**: The name of the Ollama model to use for embeddings.
+  - Default: `deepseek-r1:1.5b`
+  - Ensure this model is available in your Ollama instance (e.g., via `ollama pull deepseek-r1:1.5b`).
+- **`OLLAMA_LLM_NAME`**: The name of the Ollama model to use for language generation (answers, summaries, keywords).
+  - Default: `deepseek-r1:1.5b`
+  - Ensure this model is available in your Ollama instance.
+- **`RERANKER_MODEL_NAME`**: The name of the Sentence Transformers CrossEncoder model to use for re-ranking search results.
+  - Default: `cross-encoder/ms-marco-MiniLM-L-6-v2`
+  - This model will be downloaded automatically on first use if not cached by Sentence Transformers.
+- **`PDF_STORAGE_PATH`**: The directory path for storing uploaded documents temporarily during processing.
+  - Default: `document_store/pdfs/`
+  - Ensure this directory is writable by the application.
+- **`LOG_LEVEL`**: The logging level for the application.
+  - Default: `INFO`
+  - Supported values: `DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL`.
+
+For local development, you can use a `.env` file (e.g., by using the `python-dotenv` library, not included by default) to manage these variables. Add `.env` to your `.gitignore` file.
 
 ## Troubleshooting
 
@@ -194,6 +222,11 @@ This will launch a local web server, typically at [http://localhost:8501](http:/
 
 - **Dependency Conflicts:**  
   If you encounter issues with package installations, ensure that your virtual environment is activated and that you are using the correct Python version.
+
+## Developer Notes
+
+- The `requirements-dev.txt` file (if present, or to be created) would include packages useful for development, such as `pytest` for testing. (Currently, dev dependencies are not formally separated).
+- Logging is configured via `core/logger_config.py`. You can adjust log levels and formats there or via the `LOG_LEVEL` environment variable.
 
 ## Running with Docker
 

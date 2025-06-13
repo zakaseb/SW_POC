@@ -1,17 +1,29 @@
 import os
 import streamlit as st
-from langchain_community.document_loaders import PDFPlumberLoader
-from langchain_text_splitters import RecursiveCharacterTextSplitter
-from langchain_core.vectorstores import InMemoryVectorStore
-from langchain_ollama import OllamaEmbeddings
-from langchain_core.prompts import ChatPromptTemplate
-from langchain_ollama.llms import OllamaLLM
-from langchain_core.documents import Document as LangchainDocument
-import docx # For Document and opc.exceptions
-import pdfplumber # For pdfplumber.exceptions
 from rank_bm25 import BM25Okapi
-from sentence_transformers import CrossEncoder
 
+# Configure logging first
+from core.logger_config import setup_logging, get_logger
+setup_logging() # Initialize logging system
+logger = get_logger(__name__)
+
+
+# Import from new core modules
+from core.config import (
+    MAX_HISTORY_TURNS, K_SEMANTIC, K_BM25, K_RRF_PARAM, TOP_K_FOR_RERANKER, FINAL_TOP_N_FOR_CONTEXT,
+    PDF_STORAGE_PATH
+)
+from core.model_loader import get_embedding_model, get_language_model, get_reranker_model
+from core.document_processing import (
+    save_uploaded_file, load_document, chunk_documents, index_documents
+)
+from core.search_pipeline import (
+    find_related_documents, combine_results_rrf, rerank_documents
+)
+from core.generation import (
+    generate_answer, generate_summary, generate_keywords
+)
+from core.session_manager import initialize_session_state, reset_document_states, reset_file_uploader
 
 # ---------------------------------
 # App Styling with CSS
@@ -23,15 +35,11 @@ st.markdown(
         background-color: #0E1117;
         color: #FFFFFF;
     }
-    
-    /* Chat Input Styling */
     .stChatInput input {
         background-color: #1E1E1E !important;
         color: #FFFFFF !important;
         border: 1px solid #3A3A3A !important;
     }
-    
-    /* User Message Styling */
     .stChatMessage[data-testid="stChatMessage"]:nth-child(odd) {
         background-color: #1E1E1E !important;
         border: 1px solid #3A3A3A !important;
@@ -40,8 +48,6 @@ st.markdown(
         padding: 15px;
         margin: 10px 0;
     }
-    
-    /* Assistant Message Styling */
     .stChatMessage[data-testid="stChatMessage"]:nth-child(even) {
         background-color: #2A2A2A !important;
         border: 1px solid #404040 !important;
@@ -50,25 +56,19 @@ st.markdown(
         padding: 15px;
         margin: 10px 0;
     }
-    
-    /* Avatar Styling */
     .stChatMessage .avatar {
         background-color: #00FFAA !important;
         color: #000000 !important;
     }
-    
-    /* Text Color Fix */
     .stChatMessage p, .stChatMessage div {
         color: #FFFFFF !important;
     }
-    
     .stFileUploader {
         background-color: #1E1E1E;
         border: 1px solid #3A3A3A;
         border-radius: 5px;
         padding: 15px;
     }
-    
     h1, h2, h3 {
         color: #00FFAA !important;
     }
@@ -78,596 +78,179 @@ st.markdown(
 )
 
 # ---------------------------------
-# Global Configuration
+# Initialize Session State & Models
 # ---------------------------------
-MAX_HISTORY_TURNS = 3 # Number of recent user/assistant turn pairs to include in history
-K_SEMANTIC = 5 # Number of results for semantic search
-K_BM25 = 5     # Number of results for BM25 search
-K_RRF_PARAM = 60 # Constant for Reciprocal Rank Fusion (RRF)
-TOP_K_FOR_RERANKER = 10 # Number of docs from hybrid search to pass to reranker
-FINAL_TOP_N_FOR_CONTEXT = 3 # Number of docs reranker should return for LLM context
+logger.info("Initializing session state.")
+initialize_session_state()
 
-
-PROMPT_TEMPLATE = """
-You are an expert research assistant. Use the provided document context and conversation history to answer the current query.
-If the query is a follow-up question, use the conversation history to understand the context.
-If unsure, state that you don't know. Be concise and factual (max 3 sentences).
-
-Conversation History (if any):
-{conversation_history}
-
-Document Context:
-{document_context}
-
-Current Query: {user_query}
-Answer:
-"""
-
-PDF_STORAGE_PATH = "document_store/pdfs/"
-
-# Ensure the PDF storage directory exists
-os.makedirs(PDF_STORAGE_PATH, exist_ok=True)
-
-# Fetch Ollama base URL from environment variable, with a default
-OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
-
-# Cached functions to load models
-@st.cache_resource
-def get_embedding_model():
-    print(f"Loading Embedding Model from: {OLLAMA_BASE_URL}") # For debugging/verifying cache
-    return OllamaEmbeddings(model="deepseek-r1:1.5b", base_url=OLLAMA_BASE_URL)
-
-@st.cache_resource
-def get_language_model():
-    print(f"Loading Language Model from: {OLLAMA_BASE_URL}") # For debugging/verifying cache
-    return OllamaLLM(model="deepseek-r1:1.5b", base_url=OLLAMA_BASE_URL)
-
-# Initialize models using cached functions
+logger.info("Loading core models.")
 EMBEDDING_MODEL = get_embedding_model()
 LANGUAGE_MODEL = get_language_model()
+RERANKER_MODEL = get_reranker_model()
 
-# Cached function to load the reranker model
-@st.cache_resource
-def get_reranker_model(model_name='cross-encoder/ms-marco-MiniLM-L-6-v2'):
-    """
-    Loads and caches the CrossEncoder model for re-ranking.
-    """
-    try:
-        print(f"Loading CrossEncoder model: {model_name}") # For debugging/verifying cache
-        model = CrossEncoder(model_name)
-        return model
-    except Exception as e:
-        st.error(f"Error loading CrossEncoder model '{model_name}': {e}. Re-ranking will be disabled.")
-        return None
+if not EMBEDDING_MODEL or not LANGUAGE_MODEL:
+    critical_error_message = "Core models (Embedding or Language Model) failed to load. Application cannot continue. Please check Ollama connection and settings."
+    logger.critical(critical_error_message)
+    st.error(critical_error_message)
+    st.stop()
 
-# Initialize reranker model
-RERANKER_MODEL_NAME = 'cross-encoder/ms-marco-MiniLM-L-6-v2'
-RERANKER_MODEL = get_reranker_model(RERANKER_MODEL_NAME)
+logger.info("Core models loaded successfully (or Reranker gracefully disabled).")
 
-# Initialize or retrieve the vector store from session state for persistence across interactions
-# Note: The vector store itself is not cached with st.cache_resource here because it's mutable 
-# and tied to session state. We re-initialize it in session_state if it's not there or when reset.
-# The EMBEDDING_MODEL used by it *is* cached.
-if "DOCUMENT_VECTOR_DB" not in st.session_state:
-    st.session_state.DOCUMENT_VECTOR_DB = InMemoryVectorStore(EMBEDDING_MODEL)
-if "messages" not in st.session_state:
-    st.session_state.messages = []
-if "document_processed" not in st.session_state:
-    st.session_state.document_processed = False
-if "uploaded_file_key" not in st.session_state:
-    st.session_state.uploaded_file_key = 0
-if "uploaded_filenames" not in st.session_state: # Changed from uploaded_filename
-    st.session_state.uploaded_filenames = []     # Initialized as list
-if "raw_documents" not in st.session_state: # To store loaded documents before chunking
-    st.session_state.raw_documents = [] # This should be a list of lists of LangchainDocuments, or handle accumulation carefully
-if "document_summary" not in st.session_state: # To store the generated summary
-    st.session_state.document_summary = None
-if "document_keywords" not in st.session_state: # To store extracted keywords
-    st.session_state.document_keywords = None
-if "bm25_index" not in st.session_state:
-    st.session_state.bm25_index = None
-if "bm25_corpus_chunks" not in st.session_state:
-    st.session_state.bm25_corpus_chunks = []
-
-
-# ---------------------------------
-# Utility Functions
-# ---------------------------------
-def save_uploaded_file(uploaded_file):
-    """
-    Save the uploaded file to disk and return the file path.
-    """
-    file_path = os.path.join(PDF_STORAGE_PATH, uploaded_file.name)
-    try:
-        with open(file_path, "wb") as file:
-            file.write(uploaded_file.getbuffer())
-        # uploaded_filename is now a list, append new filename.
-        # This specific function handles one file at a time, so direct assignment or append might need context.
-        # For now, let's assume this function is called per file and the calling logic manages the list.
-        # However, the session state variable should be `uploaded_filenames`.
-        # This single function might be okay, but the overall logic needs to handle the list.
-        return file_path
-    except IOError as e: # More specific for file system issues
-        st.error(f"Failed to save uploaded file '{uploaded_file.name}'. An I/O error occurred: {e.strerror}. Please check permissions and disk space.")
-        return None
-    except Exception as e: # Catch-all for other unexpected errors
-        st.error(f"An unexpected error occurred while saving '{uploaded_file.name}': {e}")
-        return None
-
-def load_document(file_path):
-    """
-    Load documents from PDF, DOCX, or TXT files.
-    """
-    file_extension = os.path.splitext(file_path)[1].lower()
-    file_name = os.path.basename(file_path)
-
-    try:
-        if file_extension == ".pdf":
-            try:
-                document_loader = PDFPlumberLoader(file_path)
-                return document_loader.load()
-            except pdfplumber.exceptions.PDFSyntaxError:
-                st.error(f"Failed to load PDF '{file_name}': The file may be corrupted or not a valid PDF.")
-                return []
-            except Exception as e: # Catch other PDFPlumberLoader errors
-                st.error(f"Failed to load PDF '{file_name}': An unexpected error occurred during PDF processing. Details: {e}")
-                return []
-        elif file_extension == ".docx":
-            try:
-                doc = docx.Document(file_path)
-                full_text = "\n".join([para.text for para in doc.paragraphs])
-                if not full_text.strip():
-                    st.warning(f"DOCX file '{file_name}' appears to be empty or contains no text.")
-                    return []
-                return [LangchainDocument(page_content=full_text, metadata={"source": file_name})]
-            except docx.opc.exceptions.PackageNotFoundError: # Specific for corrupted/invalid DOCX
-                st.error(f"Failed to load DOCX '{file_name}': The file appears to be corrupted or not a valid DOCX file.")
-                return []
-            except Exception as e: # Catch other python-docx errors
-                st.error(f"Failed to load DOCX '{file_name}': An unexpected error occurred. Details: {e}")
-                return []
-        elif file_extension == ".txt":
-            try:
-                with open(file_path, "r", encoding="utf-8") as f:
-                    full_text = f.read()
-                if not full_text.strip():
-                    st.warning(f"Text file '{file_name}' appears to be empty.")
-                    return []
-                return [LangchainDocument(page_content=full_text, metadata={"source": file_name})]
-            except UnicodeDecodeError:
-                st.error(f"Failed to load TXT file '{file_name}': The file is not UTF-8 encoded. Please ensure it's a plain text file with UTF-8 encoding.")
-                return []
-            except IOError as e:
-                st.error(f"Failed to load TXT file '{file_name}': An I/O error occurred. {e.strerror}.")
-                return []
-            except Exception as e: # Catch other text file errors
-                st.error(f"Failed to load TXT file '{file_name}': An unexpected error occurred. Details: {e}")
-                return []
-        else:
-            st.error(f"Unsupported file type: '{file_extension}' for file '{file_name}'. Please upload a PDF, DOCX, or TXT file.")
-            return []
-    except MemoryError:
-        st.error(f"Failed to load document '{file_name}': The file is too large to process with available memory.")
-        return []
-    except Exception as e: # Catch-all for other unexpected errors during loading dispatch
-        st.error(f"An unexpected error occurred while attempting to load '{file_name}': {e}")
-        return []
-
-def chunk_documents(raw_documents):
-    """
-    Split raw documents into manageable chunks using RecursiveCharacterTextSplitter.
-    """
-    if not raw_documents: # Check if raw_documents is empty
-        st.warning("No content found in the document to chunk.")
-        return []
-    try:
-        text_processor = RecursiveCharacterTextSplitter(
-            chunk_size=1000,
-            chunk_overlap=200,
-            add_start_index=True,
-        )
-        processed_docs = text_processor.split_documents(raw_documents)
-        if not processed_docs:
-            st.warning("Document chunking resulted in no processable text chunks. The document might be valid but contain no extractable text after initial processing, or the text is too short.")
-        return processed_docs
-    except Exception as e:
-        st.error(f"An error occurred while chunking documents from '{st.session_state.get('uploaded_filenames', ['the file'])[0] if st.session_state.get('uploaded_filenames') else 'the file'}'. This may be due to unexpected document structure. Details: {e}")
-        return []
-
-def index_documents(document_chunks):
-    """
-    Add document chunks to the in-memory vector store.
-    """
-    if not document_chunks:
-        st.warning("No document chunks available to index. This may happen if the document was empty or text extraction failed.")
-        return
-    try:
-        st.session_state.DOCUMENT_VECTOR_DB.add_documents(document_chunks)
-        st.session_state.document_processed = True
-    except Exception as e:
-        st.error(f"An error occurred while indexing document chunks for '{st.session_state.get('uploaded_filenames', ['the file'])[0] if st.session_state.get('uploaded_filenames') else 'the file'}'. Details: {e}")
-        st.session_state.document_processed = False
-
-def find_related_documents(query):
-    """
-    Perform both semantic and BM25 search to find related document chunks.
-    Returns a dictionary with 'semantic_results' and 'bm25_results'.
-    """
-    semantic_docs = []
-    bm25_retrieved_chunks = []
-
-    if not query or not query.strip(): # Check for empty query
-        st.warning("Search query is empty. Please enter a query to find related documents.")
-        return {"semantic_results": semantic_docs, "bm25_results": bm25_retrieved_chunks}
-
-    if not st.session_state.document_processed:
-        st.warning("No document has been processed yet. Please upload and process a document before searching.")
-        return {"semantic_results": semantic_docs, "bm25_results": bm25_retrieved_chunks}
-
-    # 1. Semantic Search (Vector Search)
-    try:
-        # Ensure K_SEMANTIC doesn't exceed available docs if the library doesn't handle it
-        # similarity_search(k=...) usually handles this, but good to be mindful
-        semantic_docs = st.session_state.DOCUMENT_VECTOR_DB.similarity_search(query, k=K_SEMANTIC)
-        print(f"Semantic search found {len(semantic_docs)} results.")
-    except Exception as e:
-        st.error(f"An error occurred during semantic search for '{st.session_state.get('uploaded_filenames', ['the file'])[0] if st.session_state.get('uploaded_filenames') else 'the file'}'. Details: {e}")
-        semantic_docs = [] # Ensure it's an empty list on error
-
-    # 2. BM25 Search
-    if st.session_state.get("bm25_index") and st.session_state.get("bm25_corpus_chunks"):
-        try:
-            tokenized_query = query.lower().split(" ")
-            
-            all_doc_scores = st.session_state.bm25_index.get_scores(tokenized_query)
-            
-            # Get indices of top k_bm25 scores
-            num_bm25_chunks = len(st.session_state.bm25_corpus_chunks)
-            num_docs_to_consider = min(K_BM25, num_bm25_chunks)
-            
-            # Ensure we only process valid indices and scores
-            top_n_indices = sorted(
-                [i for i, score in enumerate(all_doc_scores) if score > 0], # Consider only positive scores
-                key=lambda i: all_doc_scores[i], 
-                reverse=True
-            )[:num_docs_to_consider]
-            
-            bm25_retrieved_chunks = [st.session_state.bm25_corpus_chunks[i] for i in top_n_indices]
-            print(f"BM25 search found {len(bm25_retrieved_chunks)} results with positive scores.")
-
-        except Exception as e:
-            st.error(f"An error occurred during BM25 search for '{st.session_state.get('uploaded_filenames', ['the file'])[0] if st.session_state.get('uploaded_filenames') else 'the file'}'. Details: {e}")
-            bm25_retrieved_chunks = [] # Ensure it's an empty list on error
-    else:
-        print("BM25 index not available. Skipping BM25 search.")
-        bm25_retrieved_chunks = []
-
-    return {"semantic_results": semantic_docs, "bm25_results": bm25_retrieved_chunks}
-
-def combine_results_rrf(search_results_dict, k_param=K_RRF_PARAM):
-    """
-    Combines search results from different methods using Reciprocal Rank Fusion (RRF).
-    Args:
-        search_results_dict (dict): A dictionary where keys are search method names (e.g., "semantic_results", "bm25_results")
-                                     and values are lists of Langchain Document objects, ordered by relevance.
-        k_param (int): The RRF k parameter (default is K_RRF_PARAM).
-    Returns:
-        list: A de-duplicated list of Langchain Document objects, sorted by RRF score.
-    """
-    doc_to_score = {}  # Maps page_content to its RRF score
-    doc_objects = {}   # Maps page_content to the actual Document object
-
-    # Process semantic results
-    semantic_results = search_results_dict.get("semantic_results", [])
-    for i, doc in enumerate(semantic_results):
-        doc_id = doc.page_content  # Assuming page_content is a unique identifier for a chunk
-        if doc_id not in doc_objects:
-            doc_objects[doc_id] = doc
-        score = 1.0 / (k_param + i + 1) # Rank is i+1
-        doc_to_score[doc_id] = doc_to_score.get(doc_id, 0) + score
-
-    # Process BM25 results
-    bm25_results = search_results_dict.get("bm25_results", [])
-    for i, doc in enumerate(bm25_results):
-        doc_id = doc.page_content
-        if doc_id not in doc_objects:
-            doc_objects[doc_id] = doc
-        score = 1.0 / (k_param + i + 1) # Rank is i+1
-        doc_to_score[doc_id] = doc_to_score.get(doc_id, 0) + score
-            
-    # Sort documents by RRF score in descending order
-    sorted_doc_ids = sorted(doc_to_score.keys(), key=lambda x: doc_to_score[x], reverse=True)
-    
-    # Get the final de-duplicated list of Document objects
-    final_combined_docs = [doc_objects[doc_id] for doc_id in sorted_doc_ids]
-    
-    print(f"RRF combined {len(semantic_results)} semantic and {len(bm25_results)} BM25 results into {len(final_combined_docs)} unique docs.")
-    return final_combined_docs
-
-def rerank_documents(query: str, documents: list, model: CrossEncoder, top_n: int = 5):
-    """
-    Re-ranks a list of documents based on their relevance to a query using a CrossEncoder model.
-    Args:
-        query (str): The user query.
-        documents (list): A list of Langchain Document objects to re-rank.
-        model (CrossEncoder): The pre-loaded CrossEncoder model.
-        top_n (int): The number of top documents to return.
-    Returns:
-        list: A list of top_n re-ranked Langchain Document objects.
-    """
-    if not documents:
-        return []
-    if model is None: # If the reranker model failed to load
-        st.warning("Re-ranker model not available. Returning documents without re-ranking.")
-        # Return up to top_n documents without re-ranking as a fallback
-        return documents[:top_n]
-
-    # Create pairs of (query, document_text) for the model
-    pairs = [(query, doc.page_content) for doc in documents]
-
-    try:
-        # Predict scores
-        scores = model.predict(pairs, show_progress_bar=False) # show_progress_bar can be True for debugging
-    except Exception as e:
-        st.error(f"Error during document re-ranking: {e}")
-        # Fallback: return original documents up to top_n if prediction fails
-        return documents[:top_n]
-
-    # Combine documents with their scores
-    scored_documents = list(zip(scores, documents))
-
-    # Sort documents by score in descending order
-    scored_documents.sort(key=lambda x: x[0], reverse=True)
-
-    # Extract the top_n documents
-    reranked_docs = [doc for score, doc in scored_documents[:top_n]]
-
-    return reranked_docs
-
-
-def generate_answer(user_query, context_documents, conversation_history=""):
-    """
-    Generate an answer based on the user query, context documents, and conversation history.
-    """
-    if not user_query or not user_query.strip():
-        return "Your question is empty. Please type a question to get an answer."
-    
-    # Check if context_documents is a list and not empty
-    if not context_documents or not isinstance(context_documents, list) or len(context_documents) == 0:
-        return "I couldn't find relevant information in the document to answer your query. Please try rephrasing your question or ensure the document contains the relevant topics."
-        
-    try:
-        context_text = "\n\n".join([doc.page_content for doc in context_documents])
-        if not context_text.strip(): # Edge case: context_documents exist but have no content
-             return "The relevant sections found in the document appear to be empty. Cannot generate an answer."
-        
-        conversation_prompt = ChatPromptTemplate.from_template(PROMPT_TEMPLATE)
-        response_chain = conversation_prompt | LANGUAGE_MODEL
-        
-        response = response_chain.invoke({
-            "user_query": user_query,
-            "document_context": context_text,
-            "conversation_history": conversation_history
-        })
-        
-        if not response or not response.strip():
-            return "The AI model returned an empty response. Please try rephrasing your question or try again later."
-        return response
-    except Exception as e:
-        st.error(f"An error occurred while generating the answer using the AI model. Details: {e}")
-        return "I'm sorry, but I encountered an error while trying to generate a response. Please try again later or rephrase your question."
-
-SUMMARIZATION_PROMPT_TEMPLATE = """
-You are an expert research assistant. Provide a concise summary of the following document.
-Focus on the main points and key takeaways. The summary should be approximately 3-5 sentences long.
-
-Document:
-{document_text}
-
-Summary:
-"""
-
-def generate_summary(full_document_text):
-    """
-    Generates a summary for the given document text.
-    """
-    if not full_document_text or not full_document_text.strip():
-        st.warning("Document content is empty or contains only whitespace. Cannot generate summary.")
-        return None # Return None for the UI to handle (e.g. not display summary section)
-    try:
-        summary_prompt = ChatPromptTemplate.from_template(SUMMARIZATION_PROMPT_TEMPLATE)
-        summary_chain = summary_prompt | LANGUAGE_MODEL
-        summary = summary_chain.invoke({"document_text": full_document_text})
-        if not summary or not summary.strip():
-            st.warning("The AI model returned an empty summary. The document might be too short or lack clear content for summarization.")
-            return None 
-        return summary
-    except Exception as e:
-        st.error(f"An error occurred while generating the document summary using the AI model. Details: {e}")
-        return "Failed to generate summary due to an AI model error. Please try again later."
-
-KEYWORD_EXTRACTION_PROMPT_TEMPLATE = """
-You are an expert research assistant. Analyze the following document and extract the top 5-10 most relevant keywords or key phrases.
-Present them as a comma-separated list.
-
-Document:
-{document_text}
-
-Keywords:
-"""
-
-def generate_keywords(full_document_text):
-    """
-    Generates keywords for the given document text.
-    """
-    if not full_document_text or not full_document_text.strip():
-        st.warning("Document content is empty or contains only whitespace. Cannot extract keywords.")
-        return None # Return None for the UI to handle
-    try:
-        keywords_prompt = ChatPromptTemplate.from_template(KEYWORD_EXTRACTION_PROMPT_TEMPLATE)
-        keywords_chain = keywords_prompt | LANGUAGE_MODEL
-        keywords = keywords_chain.invoke({"document_text": full_document_text})
-        if not keywords or not keywords.strip():
-            st.warning("The AI model returned no keywords. The document might be too short or lack distinct terms.")
-            return None
-        return keywords
-    except Exception as e:
-        st.error(f"An error occurred while extracting keywords using the AI model. Details: {e}")
-        return "Failed to extract keywords due to an AI model error. Please try again later."
+os.makedirs(PDF_STORAGE_PATH, exist_ok=True)
+logger.info(f"Ensured PDF storage directory exists: {PDF_STORAGE_PATH}")
 
 
 # ---------------------------------
 # User Interface
 # ---------------------------------
 
-# Sidebar for controls
 with st.sidebar:
     st.header("Controls")
     if st.button("Clear Chat History", key="clear_chat"):
         st.session_state.messages = []
-        # No st.rerun() needed here, Streamlit automatically reruns on widget interaction.
+        logger.info("Chat history cleared by user.")
 
-    if st.button("Reset All Documents & Chat", key="reset_document"): # Changed button label
-        # Re-initialize with the cached embedding model
-        st.session_state.DOCUMENT_VECTOR_DB = InMemoryVectorStore(get_embedding_model())
-        st.session_state.document_processed = False
-        st.session_state.messages = [] # Clear chat as well, as context is lost
-        st.session_state.uploaded_file_key += 1 # Increment key to reset file uploader
-        if 'uploaded_filenames' in st.session_state: # Changed from uploaded_filename
-            st.session_state.uploaded_filenames = []   # Reset to empty list
-        st.session_state.raw_documents = [] # Clear raw documents
-        st.session_state.document_summary = None # Clear summary
-        st.session_state.document_keywords = None # Clear keywords
-        st.session_state.bm25_index = None # Clear BM25 index
-        st.session_state.bm25_corpus_chunks = [] # Clear BM25 corpus
-        st.success("All documents and chat reset. You can now upload new documents.") # Changed message
+    if st.button("Reset All Documents & Chat", key="reset_doc_chat_button"):
+        logger.info("Resetting all documents and chat.")
+        reset_document_states(clear_chat=True)
+        reset_file_uploader()
+        st.success("All documents and chat reset. You can now upload new documents.")
+        logger.info("All documents and chat successfully reset.")
         st.rerun()
 
     if st.session_state.document_processed:
-        if st.button("Summarize Uploaded Content", key="summarize_doc_button"): # Changed button label
+        if st.button("Summarize Uploaded Content", key="summarize_content_button"):
             if st.session_state.raw_documents:
-                with st.spinner("Generating summary for all documents... This might take a few moments."): # Changed spinner text
+                with st.spinner("Generating summary for all documents... This might take a few moments."):
                     full_text = "\n\n".join([doc.page_content for doc in st.session_state.raw_documents])
                     if not full_text.strip():
-                        st.sidebar.warning("Cannot generate summary: Combined content of documents is effectively empty.") # Changed message
+                        st.sidebar.warning("Cannot generate summary: Combined content of documents is effectively empty.")
+                        logger.warning("Summarization attempt on empty combined content.")
                         st.session_state.document_summary = None
                     else:
-                        summary_text = generate_summary(full_text)
-                        st.session_state.document_summary = summary_text # This might be None or an error message
+                        logger.info("Generating combined content summary.")
+                        summary_text = generate_summary(LANGUAGE_MODEL, full_text)
+                        st.session_state.document_summary = summary_text
+                        if "Failed to generate summary" in (summary_text or ""):
+                             logger.error(f"Summary generation failed: {summary_text}")
+                        else:
+                             logger.info("Summary generated successfully.")
             else:
-                st.sidebar.error("Cannot generate summary: Document content not loaded or available.") # Kept as is, still relevant
+                st.sidebar.error("Cannot generate summary: Document content not loaded or available.")
+                logger.warning("Summarization attempt with no raw documents loaded.")
         
-        if st.button("Extract Keywords from Content", key="extract_keywords_button"): # Changed button label
+        if st.button("Extract Keywords from Content", key="extract_keywords_content_button"):
             if st.session_state.raw_documents:
-                with st.spinner("Extracting keywords from all documents..."): # Changed spinner text
+                with st.spinner("Extracting keywords from all documents..."):
                     full_text = "\n\n".join([doc.page_content for doc in st.session_state.raw_documents])
                     if not full_text.strip():
-                        st.sidebar.warning("Cannot extract keywords: Combined content of documents is effectively empty.") # Changed message
+                        st.sidebar.warning("Cannot extract keywords: Combined content of documents is effectively empty.")
+                        logger.warning("Keyword extraction attempt on empty combined content.")
                         st.session_state.document_keywords = None
                     else:
-                        keywords_text = generate_keywords(full_text)
-                        st.session_state.document_keywords = keywords_text # This might be None or an error message
+                        logger.info("Extracting keywords from combined content.")
+                        keywords_text = generate_keywords(LANGUAGE_MODEL, full_text)
+                        st.session_state.document_keywords = keywords_text
+                        if "Failed to extract keywords" in (keywords_text or ""):
+                            logger.error(f"Keyword extraction failed: {keywords_text}")
+                        else:
+                            logger.info("Keywords extracted successfully.")
             else:
-                st.sidebar.error("Cannot extract keywords: Document content not loaded or available.") # Kept as is, still relevant
+                st.sidebar.error("Cannot extract keywords: Document content not loaded or available.")
+                logger.warning("Keyword extraction attempt with no raw documents loaded.")
     
-    # Display summary if available and not an error message (error messages are shown by st.error within generate_summary)
     if st.session_state.document_summary and "Failed to generate summary" not in st.session_state.document_summary:
         st.sidebar.markdown("---")
-        st.sidebar.subheader("📄 Combined Content Summary") # Changed subheader
+        st.sidebar.subheader("📄 Combined Content Summary")
         st.sidebar.info(st.session_state.document_summary)
-    elif st.session_state.document_summary and "Failed to generate summary" in st.session_state.document_summary:
-        # Error already displayed by st.error in generate_summary, clear it from session state so it doesn't persist as "info"
-        # This is a bit of a workaround for functions returning error strings. Ideally, they'd raise exceptions handled by caller.
-        pass # Error is already shown by the function
 
-    # Display keywords if available and not an error message
     if st.session_state.document_keywords and "Failed to extract keywords" not in st.session_state.document_keywords:
         st.sidebar.markdown("---")
-        st.sidebar.subheader("🔑 Extracted Keywords (Combined)") # Changed subheader
-        # Using st.text for keywords as they might be long and st.success has a specific connotation
+        st.sidebar.subheader("🔑 Extracted Keywords (Combined)")
         st.sidebar.text_area("Keywords:", st.session_state.document_keywords, height=100, disabled=True)
-    elif st.session_state.document_keywords and "Failed to extract keywords" in st.session_state.document_keywords:
-        pass # Error is already shown by the function
 
 st.title("📘 DocuMind-AI")
 st.markdown("### Your Intelligent Document Assistant")
 st.markdown("---")
 
-# File Upload Section
-uploaded_file = st.file_uploader(
+uploaded_files = st.file_uploader(
     "Upload Research Documents (PDF, DOCX, TXT)",
     type=["pdf", "docx", "txt"],
     help="Select one or more PDF, DOCX, or TXT documents for analysis. Processing will begin upon upload. Re-uploading or changing files will reset the session.",
     accept_multiple_files=True,
-    key=f"file_uploader_{st.session_state.uploaded_file_key}" # Use key to allow reset
+    key=f"file_uploader_{st.session_state.uploaded_file_key}"
 )
 
-if uploaded_file: # This will now be a list of files if multiple are uploaded
-    uploaded_file_names = sorted([f.name for f in uploaded_file]) # Get names of newly uploaded files
+if uploaded_files:
+    current_uploaded_file_names = sorted([f.name for f in uploaded_files])
+    logger.info(f"Files uploaded: {current_uploaded_file_names}")
 
-    # Check if the new set of files is different from the currently processed ones
-    if set(uploaded_file_names) != set(st.session_state.get('uploaded_filenames', [])):
-        st.session_state.DOCUMENT_VECTOR_DB = InMemoryVectorStore(get_embedding_model()) # Reset DB
-        st.session_state.document_processed = False
-        st.session_state.messages = []
-        st.session_state.raw_documents = [] # Reset raw documents list
-        st.session_state.document_summary = None
-        st.session_state.document_keywords = None
-        st.session_state.bm25_index = None
-        st.session_state.bm25_corpus_chunks = []
-        st.session_state.uploaded_filenames = [] # Reset stored filenames
+    if set(current_uploaded_file_names) != set(st.session_state.get('uploaded_filenames', [])):
+        logger.info("New set of files detected. Resetting document states.")
+        reset_document_states(clear_chat=True)
 
-        all_raw_docs_for_session = [] # Accumulate raw docs from all uploaded files in this batch
+        all_raw_docs_for_session = []
+        successfully_loaded_filenames = []
 
-        for current_file_obj in uploaded_file:
-            with st.spinner(f"Processing '{current_file_obj.name}'... This may take a moment."):
-                saved_path = save_uploaded_file(current_file_obj) # save_uploaded_file still takes one file
+        for uploaded_file_obj in uploaded_files:
+            filename = uploaded_file_obj.name
+            logger.debug(f"Processing uploaded file: {filename}")
+            with st.spinner(f"Processing '{filename}'... This may take a moment."):
+                saved_path = save_uploaded_file(uploaded_file_obj)
                 if saved_path:
-                    # Load documents from the current file
+                    logger.info(f"File '{filename}' saved to '{saved_path}'")
                     raw_docs_from_file = load_document(saved_path)
                     if raw_docs_from_file:
                         all_raw_docs_for_session.extend(raw_docs_from_file)
-                        st.session_state.uploaded_filenames.append(current_file_obj.name) # Add to list of processed filenames
-                        print(f"Successfully loaded and added {current_file_obj.name} to processing queue.")
+                        successfully_loaded_filenames.append(filename)
+                        logger.info(f"Successfully loaded and parsed: {filename}")
                     else:
-                        st.error(f"Could not load document from '{current_file_obj.name}'. It might be empty or corrupted.")
+                        st.error(f"Could not load document from '{filename}'. It might be empty, corrupted, or an unsupported type.")
+                        logger.error(f"Failed to load document from '{filename}'.")
                 else:
-                    st.error(f"Failed to save '{current_file_obj.name}'. It will be skipped.")
+                    st.error(f"Failed to save '{filename}'. It will be skipped.")
+                    logger.error(f"Failed to save '{filename}'.")
 
-        # After processing all files in the current upload batch
+        st.session_state.uploaded_filenames = successfully_loaded_filenames
+
         if all_raw_docs_for_session:
-            st.session_state.raw_documents = all_raw_docs_for_session # Store all raw documents from this session
+            st.session_state.raw_documents = all_raw_docs_for_session
+            logger.info(f"Total {len(all_raw_docs_for_session)} raw documents collected from {len(successfully_loaded_filenames)} files.")
 
             with st.spinner(f"Chunking and indexing {len(st.session_state.uploaded_filenames)} document(s)..."):
-                processed_chunks = chunk_documents(st.session_state.raw_documents) # Chunk all combined documents
+                logger.debug("Starting document chunking.")
+                processed_chunks = chunk_documents(st.session_state.raw_documents)
                 if processed_chunks:
-                    index_documents(processed_chunks) # Index all chunks together
+                    logger.info(f"{len(processed_chunks)} chunks created.")
+                    logger.debug("Starting document indexing.")
+                    index_documents(processed_chunks) # Modifies st.session_state
 
-                    if st.session_state.document_processed: # Check if vector indexing was successful
+                    if st.session_state.document_processed:
+                        logger.info("Vector indexing successful.")
                         try:
+                            logger.debug("Starting BM25 indexing.")
                             corpus_texts = [chunk.page_content for chunk in processed_chunks]
                             tokenized_corpus = [doc.lower().split(" ") for doc in corpus_texts]
-
                             st.session_state.bm25_index = BM25Okapi(tokenized_corpus)
                             st.session_state.bm25_corpus_chunks = processed_chunks
                             display_filenames = ", ".join(st.session_state.uploaded_filenames)
-                            print(f"BM25 index created for documents: {display_filenames}")
-                            st.success(f"✅ Documents ({display_filenames}) processed and indexed successfully!") # Simplified message
+                            logger.info(f"BM25 index created for documents: {display_filenames}")
+                            st.success(f"✅ Documents ({display_filenames}) processed and indexed successfully!")
                         except Exception as e:
                             display_filenames = ", ".join(st.session_state.uploaded_filenames)
+                            logger.exception(f"Failed to create BM25 index for documents ({display_filenames}).")
                             st.error(f"Failed to create BM25 index for documents ({display_filenames}). Vector indexing may still be active. Details: {e}")
                     else:
                         display_filenames = ", ".join(st.session_state.uploaded_filenames)
+                        logger.error(f"Vector indexing failed for documents ({display_filenames}). BM25 indexing skipped.")
                         st.error(f"Documents ({display_filenames}) loaded but failed during vector indexing. BM25 indexing also skipped.")
                 else:
+                    logger.warning("No processable chunks generated from documents. Indexing skipped.")
                     st.warning("No processable content found after loading all uploaded documents. Indexing skipped.")
-        elif not st.session_state.uploaded_filenames and uploaded_file: # Files were uploaded but none were successfully loaded
+        elif not st.session_state.uploaded_filenames and uploaded_files:
+             logger.warning("Files were uploaded, but none could be successfully processed.")
              st.warning("Although files were uploaded, none could be successfully processed. Please check file formats and content.")
-        # If st.session_state.uploaded_filenames has content, but all_raw_docs_for_session is empty,
-        # it means files were saved but load_document returned empty for all ofthem. (Handled by messages inside loop)
 
-
-# Display successfully processed filenames if any
 if st.session_state.get('uploaded_filenames') and st.session_state.get('document_processed'):
     st.markdown("---")
     st.markdown(f"**Successfully processed document(s):**")
@@ -675,74 +258,79 @@ if st.session_state.get('uploaded_filenames') and st.session_state.get('document
         st.markdown(f"- _{name}_")
     st.markdown("---")
 
-
-# Display existing chat messages
 for message in st.session_state.messages:
     with st.chat_message(message["role"], avatar=message.get("avatar")):
         st.write(message["content"])
 
-# Chat Input Section - only show if a document has been processed
 if st.session_state.document_processed:
     if len(st.session_state.uploaded_filenames) > 1:
         chat_placeholder = f"Ask a question about the {len(st.session_state.uploaded_filenames)} loaded documents..."
     elif len(st.session_state.uploaded_filenames) == 1:
         chat_placeholder = f"Ask a question about '{st.session_state.uploaded_filenames[0]}'..."
-    else: # Should not happen if document_processed is true, but as a fallback
+    else:
         chat_placeholder = "Ask a question about the loaded document(s)..."
 
     user_input = st.chat_input(chat_placeholder)
     if user_input:
+        logger.info(f"User query: {user_input}")
         if not user_input.strip():
             st.warning("Please enter a question.")
         else:
-            # Format conversation history before adding the current user input
-            # The history should be what was there *before* this new user_input
-            # st.session_state.messages already contains the history up to the last assistant response.
-            num_messages_to_take = MAX_HISTORY_TURNS * 2 
-            chat_log_for_prompt = st.session_state.get("messages", [])[-num_messages_to_take:]
-
-            history_lines = []
-            for msg in chat_log_for_prompt:
-                role_label = "User" if msg["role"] == "user" else "Assistant"
-                history_lines.append(f"{role_label}: {msg['content']}")
-            formatted_history = "\n".join(history_lines)
-
-            # Add current user input to messages for display
             st.session_state.messages.append({"role": "user", "content": user_input})
             with st.chat_message("user"):
                 st.write(user_input)
 
             with st.spinner("Thinking..."):
-                retrieved_results_dict = find_related_documents(user_input)
-                hybrid_search_docs = combine_results_rrf(retrieved_results_dict, k_param=K_RRF_PARAM)
+                num_messages_to_take = MAX_HISTORY_TURNS * 2
+                chat_log_for_prompt = st.session_state.messages[:-1]
+                chat_log_for_prompt = chat_log_for_prompt[-num_messages_to_take:]
+                history_lines = [f"{('User' if msg['role'] == 'user' else 'Assistant')}: {msg['content']}" for msg in chat_log_for_prompt]
+                formatted_history = "\n".join(history_lines)
+                logger.debug(f"Formatted history for prompt: {formatted_history}")
+
+                retrieved_results_dict = find_related_documents(
+                    user_input,
+                    st.session_state.DOCUMENT_VECTOR_DB,
+                    st.session_state.bm25_index,
+                    st.session_state.bm25_corpus_chunks,
+                    st.session_state.document_processed
+                )
+                logger.info(f"Retrieved {len(retrieved_results_dict.get('semantic_results',[]))} semantic and {len(retrieved_results_dict.get('bm25_results',[]))} BM25 results.")
+
+                hybrid_search_docs = combine_results_rrf(retrieved_results_dict)
+                logger.info(f"Combined RRF results: {len(hybrid_search_docs)} documents.")
 
                 final_context_docs = []
                 if hybrid_search_docs:
-                    # Pass top K docs from hybrid search to the reranker
                     docs_for_reranking = hybrid_search_docs[:TOP_K_FOR_RERANKER]
-                    
-                    if RERANKER_MODEL: # Check if reranker model loaded successfully
+                    if RERANKER_MODEL:
+                        logger.debug(f"Re-ranking top {len(docs_for_reranking)} documents.")
                         with st.spinner(f"Re-ranking top {len(docs_for_reranking)} documents..."):
                             final_context_docs = rerank_documents(user_input, docs_for_reranking, RERANKER_MODEL, top_n=FINAL_TOP_N_FOR_CONTEXT)
-                    else: # Fallback if reranker model is not available
-                        st.info("Re-ranker model not loaded. Using documents from hybrid search directly (top results).") # Clarified message
-                        final_context_docs = docs_for_reranking[:FINAL_TOP_N_FOR_CONTEXT] # Take top N from hybrid results
+                        logger.info(f"Re-ranked results: {len(final_context_docs)} documents.")
+                    else:
+                        logger.info("Re-ranker model not loaded. Using documents from hybrid search directly.")
+                        st.info("Re-ranker model not loaded. Using documents from hybrid search directly (top results).")
+                        final_context_docs = docs_for_reranking[:FINAL_TOP_N_FOR_CONTEXT]
 
                     if not final_context_docs:
-                        ai_response = "After re-ranking, no relevant sections were found in the loaded documents to answer your query." # Pluralized
-                        # No need to call generate_answer if context is empty
+                        logger.warning("No relevant sections found after re-ranking (or hybrid search if reranker disabled).")
+                        ai_response = "After re-ranking, no relevant sections were found in the loaded documents to answer your query."
                     else:
-                        # Context text is built from final_context_docs inside generate_answer
+                        logger.debug("Generating answer with final context documents.")
                         ai_response = generate_answer(
+                            LANGUAGE_MODEL,
                             user_query=user_input,
                             context_documents=final_context_docs,
                             conversation_history=formatted_history
                         )
                 else:
-                    ai_response = "I could not find relevant sections in the loaded documents to answer your query. Please ensure the documents contain information related to your query or try rephrasing." # Pluralized
+                    logger.warning("No relevant sections found from hybrid search.")
+                    ai_response = "I could not find relevant sections in the loaded documents to answer your query. Please ensure the documents contain information related to your query or try rephrasing."
             
+            logger.info(f"AI Response: {ai_response[:100]}...") # Log snippet of AI response
             st.session_state.messages.append({"role": "assistant", "content": ai_response, "avatar": "🤖"})
             with st.chat_message("assistant", avatar="🤖"):
-                st.write(ai_response) # This will display the response or error/warning string from generate_answer
+                st.write(ai_response)
 else:
-    st.info("Please upload one or more PDF, DOCX, or TXT documents to begin your session and ask questions.") # Pluralized
+    st.info("Please upload one or more PDF, DOCX, or TXT documents to begin your session and ask questions.")
