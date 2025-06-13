@@ -8,21 +8,22 @@ import streamlit as st
 from core.session_manager import (
     initialize_session_state,
     reset_document_states,
-    reset_file_uploader
+    reset_file_uploader,
 )
 
 # To mock get_embedding_model call
 import core.model_loader
 
 # Path to the logger instance in session_manager.py
-SESSION_MANAGER_LOGGER_PATH = 'core.session_manager.logger'
-IN_MEMORY_VECTOR_STORE_PATH = 'core.session_manager.InMemoryVectorStore'
-GET_EMBEDDING_MODEL_PATH = 'core.session_manager.get_embedding_model'
+SESSION_MANAGER_LOGGER_PATH = "core.session_manager.logger"
+IN_MEMORY_VECTOR_STORE_PATH = "core.session_manager.InMemoryVectorStore"
+GET_EMBEDDING_MODEL_PATH = "core.session_manager.get_embedding_model"
 
 
 @pytest.fixture
 def mock_embedding_instance():
     return MagicMock(name="MockEmbeddingModelInstance")
+
 
 @pytest.fixture(autouse=True)
 def mock_logger_fixture():
@@ -30,18 +31,25 @@ def mock_logger_fixture():
     with patch(SESSION_MANAGER_LOGGER_PATH) as mock_log:
         yield mock_log
 
+
 # --- Tests for initialize_session_state ---
+
 
 @patch(GET_EMBEDDING_MODEL_PATH)
 @patch(IN_MEMORY_VECTOR_STORE_PATH)
-def test_initialize_session_state_initial_call(mock_vector_store_class, mock_get_embedding, mock_embedding_instance, mock_logger_fixture):
+def test_initialize_session_state_initial_call(
+    mock_vector_store_class,
+    mock_get_embedding,
+    mock_embedding_instance,
+    mock_logger_fixture,
+):
     mock_get_embedding.return_value = mock_embedding_instance
     mock_vs_instance = MagicMock(name="MockVectorStoreInstance")
     mock_vector_store_class.return_value = mock_vs_instance
 
     # Use a fresh dictionary for session_state in each test
     mock_session_state_dict = {}
-    with patch('core.session_manager.st.session_state', mock_session_state_dict):
+    with patch("core.session_manager.st.session_state", mock_session_state_dict):
         initialize_session_state()
 
         assert "DOCUMENT_VECTOR_DB" in st.session_state
@@ -75,9 +83,15 @@ def test_initialize_session_state_initial_call(mock_vector_store_class, mock_get
         assert "bm25_corpus_chunks" in st.session_state
         assert st.session_state.bm25_corpus_chunks == []
 
+
 @patch(GET_EMBEDDING_MODEL_PATH)
 @patch(IN_MEMORY_VECTOR_STORE_PATH)
-def test_initialize_session_state_idempotency(mock_vector_store_class, mock_get_embedding, mock_embedding_instance, mock_logger_fixture):
+def test_initialize_session_state_idempotency(
+    mock_vector_store_class,
+    mock_get_embedding,
+    mock_embedding_instance,
+    mock_logger_fixture,
+):
     mock_get_embedding.return_value = mock_embedding_instance
 
     # Pre-populate session state
@@ -87,18 +101,18 @@ def test_initialize_session_state_idempotency(mock_vector_store_class, mock_get_
     mock_session_state_dict = {
         "DOCUMENT_VECTOR_DB": initial_db,
         "messages": initial_messages,
-        "document_processed": True, # Non-default
-        "uploaded_file_key": 5,     # Non-default
+        "document_processed": True,  # Non-default
+        "uploaded_file_key": 5,  # Non-default
         "uploaded_filenames": ["file1.pdf"],
         "raw_documents": [MagicMock()],
         "document_summary": "A summary",
         "document_keywords": "keywords",
         "bm25_index": MagicMock(),
-        "bm25_corpus_chunks": [MagicMock()]
+        "bm25_corpus_chunks": [MagicMock()],
     }
 
-    with patch('core.session_manager.st.session_state', mock_session_state_dict):
-        initialize_session_state() # Call again
+    with patch("core.session_manager.st.session_state", mock_session_state_dict):
+        initialize_session_state()  # Call again
 
         # Assert that existing values were NOT overwritten
         assert st.session_state.DOCUMENT_VECTOR_DB == initial_db
@@ -115,9 +129,15 @@ def test_initialize_session_state_idempotency(mock_vector_store_class, mock_get_
 
 # --- Tests for reset_document_states ---
 
+
 @patch(GET_EMBEDDING_MODEL_PATH)
 @patch(IN_MEMORY_VECTOR_STORE_PATH)
-def test_reset_document_states_clears_all_with_chat(mock_vector_store_class, mock_get_embedding, mock_embedding_instance, mock_logger_fixture):
+def test_reset_document_states_clears_all_with_chat(
+    mock_vector_store_class,
+    mock_get_embedding,
+    mock_embedding_instance,
+    mock_logger_fixture,
+):
     mock_get_embedding.return_value = mock_embedding_instance
     new_mock_vs_instance = MagicMock(name="NewMockVectorStoreInstance")
     mock_vector_store_class.return_value = new_mock_vs_instance
@@ -131,16 +151,18 @@ def test_reset_document_states_clears_all_with_chat(mock_vector_store_class, moc
         "document_summary": "Old summary",
         "document_keywords": "Old keywords",
         "bm25_index": MagicMock(name="OldBM25Index"),
-        "bm25_corpus_chunks": [MagicMock()]
+        "bm25_corpus_chunks": [MagicMock()],
     }
 
-    with patch('core.session_manager.st.session_state', mock_session_state_dict):
+    with patch("core.session_manager.st.session_state", mock_session_state_dict):
         reset_document_states(clear_chat=True)
 
         assert st.session_state.DOCUMENT_VECTOR_DB == new_mock_vs_instance
-        mock_vector_store_class.assert_called_with(mock_embedding_instance) # Called to create new DB
+        mock_vector_store_class.assert_called_with(
+            mock_embedding_instance
+        )  # Called to create new DB
         assert st.session_state.document_processed is False
-        assert st.session_state.messages == [] # Chat cleared
+        assert st.session_state.messages == []  # Chat cleared
         assert st.session_state.uploaded_filenames == []
         assert st.session_state.raw_documents == []
         assert st.session_state.document_summary is None
@@ -152,7 +174,12 @@ def test_reset_document_states_clears_all_with_chat(mock_vector_store_class, moc
 
 @patch(GET_EMBEDDING_MODEL_PATH)
 @patch(IN_MEMORY_VECTOR_STORE_PATH)
-def test_reset_document_states_preserves_chat(mock_vector_store_class, mock_get_embedding, mock_embedding_instance, mock_logger_fixture):
+def test_reset_document_states_preserves_chat(
+    mock_vector_store_class,
+    mock_get_embedding,
+    mock_embedding_instance,
+    mock_logger_fixture,
+):
     mock_get_embedding.return_value = mock_embedding_instance
     new_mock_vs_instance = MagicMock(name="NewMockVectorStoreInstance")
     mock_vector_store_class.return_value = new_mock_vs_instance
@@ -160,37 +187,39 @@ def test_reset_document_states_preserves_chat(mock_vector_store_class, mock_get_
     initial_messages = [{"role": "user", "content": "Existing message"}]
     mock_session_state_dict = {
         "DOCUMENT_VECTOR_DB": MagicMock(name="OldDB"),
-        "messages": initial_messages.copy(), # Ensure we compare against the original
+        "messages": initial_messages.copy(),  # Ensure we compare against the original
         "document_processed": True,
         "uploaded_filenames": ["old_file.txt"],
         # ... other states ...
     }
 
-    with patch('core.session_manager.st.session_state', mock_session_state_dict):
+    with patch("core.session_manager.st.session_state", mock_session_state_dict):
         reset_document_states(clear_chat=False)
 
         assert st.session_state.DOCUMENT_VECTOR_DB == new_mock_vs_instance
         assert st.session_state.document_processed is False
-        assert st.session_state.messages == initial_messages # Chat preserved
-        assert st.session_state.uploaded_filenames == [] # Other states reset
+        assert st.session_state.messages == initial_messages  # Chat preserved
+        assert st.session_state.uploaded_filenames == []  # Other states reset
         mock_logger_fixture.info.assert_called_with("Document states reset.")
 
 
 # --- Tests for reset_file_uploader ---
 
-def test_reset_file_uploader(mock_logger_fixture): # mock_logger_fixture is auto-used
+
+def test_reset_file_uploader(mock_logger_fixture):  # mock_logger_fixture is auto-used
     mock_session_state_dict = {"uploaded_file_key": 10}
-    with patch('core.session_manager.st.session_state', mock_session_state_dict):
+    with patch("core.session_manager.st.session_state", mock_session_state_dict):
         reset_file_uploader()
         assert st.session_state.uploaded_file_key == 11
     # No specific log for reset_file_uploader in the function itself, so not checking logger here.
 
+
 def test_reset_file_uploader_initializes_key(mock_logger_fixture):
-    mock_session_state_dict = {} # Key doesn't exist
-    with patch('core.session_manager.st.session_state', mock_session_state_dict):
+    mock_session_state_dict = {}  # Key doesn't exist
+    with patch("core.session_manager.st.session_state", mock_session_state_dict):
         # This scenario implies uploaded_file_key should be initialized by initialize_session_state first.
         # If reset_file_uploader were called before initialize_session_state, it would error.
         # Assuming initialize_session_state has run:
-        st.session_state.uploaded_file_key = 0 # Simulate prior initialization
+        st.session_state.uploaded_file_key = 0  # Simulate prior initialization
         reset_file_uploader()
         assert st.session_state.uploaded_file_key == 1

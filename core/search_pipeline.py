@@ -6,7 +6,10 @@ from .logger_config import get_logger
 
 logger = get_logger(__name__)
 
-def find_related_documents(query, document_vector_db, bm25_index, bm25_corpus_chunks, document_processed_flag):
+
+def find_related_documents(
+    query, document_vector_db, bm25_index, bm25_corpus_chunks, document_processed_flag
+):
     """
     Perform both semantic and BM25 search to find related document chunks.
     Returns a dictionary with 'semantic_results' and 'bm25_results'.
@@ -16,13 +19,23 @@ def find_related_documents(query, document_vector_db, bm25_index, bm25_corpus_ch
 
     if not query or not query.strip():
         logger.warning("find_related_documents called with empty query.")
-        st.warning("Search query is empty. Please enter a query to find related documents.")
-        return {"semantic_results": semantic_docs, "bm25_results": bm25_retrieved_chunks}
+        st.warning(
+            "Search query is empty. Please enter a query to find related documents."
+        )
+        return {
+            "semantic_results": semantic_docs,
+            "bm25_results": bm25_retrieved_chunks,
+        }
 
     if not document_processed_flag:
         logger.warning("find_related_documents called but no document processed.")
-        st.warning("No document has been processed yet. Please upload and process a document before searching.")
-        return {"semantic_results": semantic_docs, "bm25_results": bm25_retrieved_chunks}
+        st.warning(
+            "No document has been processed yet. Please upload and process a document before searching."
+        )
+        return {
+            "semantic_results": semantic_docs,
+            "bm25_results": bm25_retrieved_chunks,
+        }
 
     # 1. Semantic Search (Vector Search)
     logger.debug(f"Performing semantic search for query: '{query[:50]}...'")
@@ -48,11 +61,13 @@ def find_related_documents(query, document_vector_db, bm25_index, bm25_corpus_ch
             top_n_indices = sorted(
                 [i for i, score in enumerate(all_doc_scores) if score > 0],
                 key=lambda i: all_doc_scores[i],
-                reverse=True
+                reverse=True,
             )[:num_docs_to_consider]
 
             bm25_retrieved_chunks = [bm25_corpus_chunks[i] for i in top_n_indices]
-            logger.info(f"BM25 search found {len(bm25_retrieved_chunks)} results with positive scores.")
+            logger.info(
+                f"BM25 search found {len(bm25_retrieved_chunks)} results with positive scores."
+            )
         except Exception as e:
             user_message = "An error occurred during BM25 search."
             logger.exception(f"{user_message} Details: {e}")
@@ -63,6 +78,7 @@ def find_related_documents(query, document_vector_db, bm25_index, bm25_corpus_ch
         bm25_retrieved_chunks = []
 
     return {"semantic_results": semantic_docs, "bm25_results": bm25_retrieved_chunks}
+
 
 def combine_results_rrf(search_results_dict):
     """
@@ -87,11 +103,16 @@ def combine_results_rrf(search_results_dict):
         score = 1.0 / (K_RRF_PARAM + i + 1)
         doc_to_score[doc_id] = doc_to_score.get(doc_id, 0) + score
 
-    sorted_doc_ids = sorted(doc_to_score.keys(), key=lambda x: doc_to_score[x], reverse=True)
+    sorted_doc_ids = sorted(
+        doc_to_score.keys(), key=lambda x: doc_to_score[x], reverse=True
+    )
     final_combined_docs = [doc_objects[doc_id] for doc_id in sorted_doc_ids]
 
-    logger.info(f"RRF combined {len(semantic_results)} semantic and {len(bm25_results)} BM25 results into {len(final_combined_docs)} unique docs.")
+    logger.info(
+        f"RRF combined {len(semantic_results)} semantic and {len(bm25_results)} BM25 results into {len(final_combined_docs)} unique docs."
+    )
     return final_combined_docs
+
 
 def rerank_documents(query: str, documents: list, model: CrossEncoder, top_n: int):
     """
@@ -102,7 +123,9 @@ def rerank_documents(query: str, documents: list, model: CrossEncoder, top_n: in
         return []
     if model is None:
         logger.warning("Re-ranker model not available. Skipping re-ranking.")
-        st.warning("Re-ranker model not available. Returning documents without re-ranking.") # User feedback fine
+        st.warning(
+            "Re-ranker model not available. Returning documents without re-ranking."
+        )  # User feedback fine
         return documents[:top_n]
 
     logger.debug(f"Re-ranking {len(documents)} documents for query: '{query[:50]}...'")

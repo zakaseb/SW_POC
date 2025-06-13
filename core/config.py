@@ -1,7 +1,9 @@
 import os
 
 # Global Application Constants
-MAX_HISTORY_TURNS = 3  # Number of recent user/assistant turn pairs to include in history
+MAX_HISTORY_TURNS = (
+    3  # Number of recent user/assistant turn pairs to include in history
+)
 K_SEMANTIC = 5  # Number of results for semantic search
 K_BM25 = 5  # Number of results for BM25 search
 K_RRF_PARAM = 60  # Constant for Reciprocal Rank Fusion (RRF)
@@ -45,9 +47,13 @@ Keywords:
 """
 
 # Model Names
-OLLAMA_EMBEDDING_MODEL_NAME = os.getenv("OLLAMA_EMBEDDING_MODEL_NAME", "deepseek-r1:1.5b")
+OLLAMA_EMBEDDING_MODEL_NAME = os.getenv(
+    "OLLAMA_EMBEDDING_MODEL_NAME", "deepseek-r1:1.5b"
+)
 OLLAMA_LLM_NAME = os.getenv("OLLAMA_LLM_NAME", "deepseek-r1:1.5b")
-RERANKER_MODEL_NAME = os.getenv("RERANKER_MODEL_NAME", "cross-encoder/ms-marco-MiniLM-L-6-v2")
+RERANKER_MODEL_NAME = os.getenv(
+    "RERANKER_MODEL_NAME", "cross-encoder/ms-marco-MiniLM-L-6-v2"
+)
 
 # Paths and URLs
 PDF_STORAGE_PATH = os.getenv("PDF_STORAGE_PATH", "document_store/pdfs/")
