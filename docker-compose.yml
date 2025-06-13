@@ -1,20 +1,37 @@
 version: '3.8'
 
+# For local development, you can create a .env file in the project root
+# to override any of the environment variables defined below.
+# Example .env file:
+# OLLAMA_BASE_URL=http://localhost:11434
+# LOG_LEVEL=DEBUG
+
 services:
   app:
     build: .
     ports:
       - "8501:8501"
     volumes:
-      - ./document_store:/app/document_store/
+      # Mount the local document_store to the container's document_store
+      # The application, by default, will create a 'pdfs' subfolder inside this if PDF_STORAGE_PATH is not changed.
+      - ./document_store:/app/document_store
+      # Live reload for application code
+      - ./rag_deep.py:/app/rag_deep.py
+      - ./core:/app/core
     environment:
       # Default to Ollama running on the Docker host.
       # Users might need to change host.docker.internal depending on their OS
       # or if Ollama is running in another container or remote.
-      - OLLAMA_BASE_URL=http://host.docker.internal:11434
+      - OLLAMA_BASE_URL=${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
+      - OLLAMA_EMBEDDING_MODEL_NAME=${OLLAMA_EMBEDDING_MODEL_NAME:-deepseek-r1:1.5b}
+      - OLLAMA_LLM_NAME=${OLLAMA_LLM_NAME:-deepseek-r1:1.5b}
+      - RERANKER_MODEL_NAME=${RERANKER_MODEL_NAME:-cross-encoder/ms-marco-MiniLM-L-6-v2}
+      # PDF_STORAGE_PATH default within the container.
+      # The volume mount for ./document_store ensures this path is persistent on the host.
+      - PDF_STORAGE_PATH=${PDF_STORAGE_PATH:-/app/document_store/pdfs/}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
       # Set Streamlit specific environment variables if needed, e.g.,
       # - STREAMLIT_SERVER_MAX_UPLOAD_SIZE=1028 
-      # (though this is usually configured in Streamlit's config file or command line)
     # If your application needs to wait for Ollama or another service,
     # you might add a healthcheck or depends_on condition here,
     # but for now, we assume Ollama is independently managed and available.
@@ -22,4 +39,4 @@ services:
 # Optional: Define a top-level volume if you prefer named volumes,
 # but bind mounts are often simpler for local development.
 # volumes:
-#   document_store_data:
+#   document_store_data: # Example if using a named volume for the main document_store

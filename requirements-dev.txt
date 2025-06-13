@@ -1,6 +1,14 @@
 pytest>=7.0.0
 pytest-mock>=3.0.0
-python-docx>=1.1.0 # For creating test docx files
+# python-docx is in main requirements.txt, where it's used by the application itself.
+# No need to duplicate here if it's already a main dependency.
+# If it were purely for test data generation and not used by the app, it would belong here.
+# Assuming it's in requirements.txt for app functionality.
+
+# Linters and Formatters
+flake8>=5.0.0
+black>=23.0.0
+
 # pdfplumber is in main requirements, needed for rag_deep import
 # streamlit is in main requirements, needed for rag_deep import
 # langchain related packages are in main requirements.
