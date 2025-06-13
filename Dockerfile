@@ -15,9 +15,20 @@ COPY requirements.txt .
 # Using --no-cache-dir to reduce image size
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy the application script and the document_store directory into the container at /app
-COPY rag_deep.py .
-COPY document_store/ ./document_store/
+# Copy the rest of the application code (respecting .dockerignore)
+# This includes rag_deep.py, the core/ directory, and any other necessary files.
+COPY . .
+
+# Create a non-root user and group
+RUN groupadd -r appgroup && useradd --no-log-init -r -g appgroup -m -s /bin/bash appuser
+
+# Change ownership of the /app directory to the new user
+# This ensures that the application runs with non-root privileges and can write to its directory if needed
+# (e.g., for the default PDF_STORAGE_PATH if it's under /app)
+RUN chown -R appuser:appgroup /app
+
+# Switch to the non-root user
+USER appuser
 
 # Make port 8501 available to the world outside this container
 EXPOSE 8501
