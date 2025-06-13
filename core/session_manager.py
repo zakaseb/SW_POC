@@ -5,6 +5,7 @@ from .logger_config import get_logger
 
 logger = get_logger(__name__)
 
+
 def initialize_session_state():
     """
     Initializes the session state variables if they don't exist.
@@ -30,6 +31,7 @@ def initialize_session_state():
     if "bm25_corpus_chunks" not in st.session_state:
         st.session_state.bm25_corpus_chunks = []
 
+
 def reset_document_states(clear_chat=True):
     """
     Resets all document-related session state variables.
@@ -47,6 +49,7 @@ def reset_document_states(clear_chat=True):
     st.session_state.bm25_index = None
     st.session_state.bm25_corpus_chunks = []
     logger.info("Document states reset.")
+
 
 def reset_file_uploader():
     """Increments the key for the file uploader to reset it."""
