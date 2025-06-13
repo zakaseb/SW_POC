@@ -1,312 +1,233 @@
-This Streamlit application, **DocuMind-AI**, is designed to process various document formats (PDF, DOCX, TXT), extract text, index content in an in-memory vector store, and allow users to query the document using **natural language**. Additionally, it offers features like document summarization and keyword extraction. It utilizes **LangChain** and **Ollama** models (cached for performance) for embeddings, language generation, summarization, and keyword extraction.
+# DocuMind-AI: Detailed Explanation
 
-## **Detailed Explanation**
+**DocuMind-AI** is an AI-powered document assistant that allows users to upload **one or more documents** (PDF, DOCX, TXT), process their combined content, and interactively ask questions. Built with Streamlit and LangChain, it leverages embeddings and language models to provide concise, factual answers, summaries, and keyword extractions based on the documents' context. The application's backend logic has been modularized into a `core` package for better structure and maintainability.
 
-### **1. App Styling with CSS**
+## **1. App Styling with CSS**
 ```python
+# In rag_deep.py
 st.markdown(
     """
     <style>
-    .stApp {
-        background-color: #0E1117;
-        color: #FFFFFF;
-    }
-    ...
+    .stApp { ... }
+    /* ... other styles ... */
     </style>
     """,
     unsafe_allow_html=True,
 )
 ```
-- Uses **custom CSS** to style the Streamlit UI.
-- Sets a **dark theme** with a black background (`#0E1117`).
-- Customizes **chat input, messages, file uploader**, and **headings** for a modern, professional look.
+- Uses **custom CSS** injected via `st.markdown` in the main `rag_deep.py` script to style the Streamlit UI.
+- Sets a **dark theme** and customizes chat input, messages, file uploader, and headings.
 
-### **2. Global Configuration**
+## **2. Global Configuration (`core/config.py`)**
+Global constants, prompt templates, model names, and configurable paths are now primarily located in `core/config.py`.
+
 ```python
-MAX_HISTORY_TURNS = 3 # Number of recent user/assistant turn pairs to include in history
-K_SEMANTIC = 5 # Number of results for semantic search
-K_BM25 = 5     # Number of results for BM25 search
-K_RRF_PARAM = 60 # Constant for Reciprocal Rank Fusion (RRF)
-TOP_K_FOR_RERANKER = 10 # Number of docs from hybrid search to pass to reranker
-FINAL_TOP_N_FOR_CONTEXT = 3 # Number of docs reranker should return for LLM context
+# In core/config.py
+import os
 
-PROMPT_TEMPLATE = """
-You are an expert research assistant. Use the provided document context and conversation history to answer the current query.
-If the query is a follow-up question, use the conversation history to understand the context.
-If unsure, state that you don't know. Be concise and factual (max 3 sentences).
+# Global Application Constants
+MAX_HISTORY_TURNS = 3
+K_SEMANTIC = 5
+# ... other search parameters ...
 
-Conversation History (if any):
-{conversation_history}
+# Model Names (configurable via environment variables)
+OLLAMA_EMBEDDING_MODEL_NAME = os.getenv("OLLAMA_EMBEDDING_MODEL_NAME", "deepseek-r1:1.5b")
+OLLAMA_LLM_NAME = os.getenv("OLLAMA_LLM_NAME", "deepseek-r1:1.5b")
+RERANKER_MODEL_NAME = os.getenv("RERANKER_MODEL_NAME", "cross-encoder/ms-marco-MiniLM-L-6-v2")
 
-Document Context:
-{document_context}
+# Paths and URLs (configurable via environment variables)
+PDF_STORAGE_PATH = os.getenv("PDF_STORAGE_PATH", "document_store/pdfs/")
+OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
 
-Current Query: {user_query}
-Answer:
-"""
+# Prompt Templates
+PROMPT_TEMPLATE = """..."""
+SUMMARIZATION_PROMPT_TEMPLATE = """..."""
+KEYWORD_EXTRACTION_PROMPT_TEMPLATE = """..."""
+
+# Logging Configuration (via environment variable)
+# LOG_LEVEL is read in core/logger_config.py using os.getenv("LOG_LEVEL", "INFO")
 ```
-- Defines a **prompt template** (`PROMPT_TEMPLATE`) that structures how the AI should respond. It now includes placeholders for `conversation_history`, `document_context`, and `user_query`.
-- `MAX_HISTORY_TURNS` controls how many pairs of user/assistant messages are included in the history.
+- **Constants**: Defines application behavior (e.g., `MAX_HISTORY_TURNS`, search parameters).
+- **Model Names & Paths**: Key configurations like Ollama URLs, model names (`OLLAMA_EMBEDDING_MODEL_NAME`, `OLLAMA_LLM_NAME`, `RERANKER_MODEL_NAME`), and `PDF_STORAGE_PATH` are configurable via **environment variables** with sensible defaults. This allows flexibility for different deployment environments.
+- **Prompt Templates**: Contains the structures for querying the LLM for answers, summaries, and keywords.
+- The `LOG_LEVEL` environment variable is used by the logging setup (see Section 9).
+
+## **3. Model Loading (`core/model_loader.py`)**
+Model loading functions are centralized in `core/model_loader.py`. These functions use `@st.cache_resource` for performance, loading each model only once.
 
 ```python
-PDF_STORAGE_PATH = "document_store/pdfs/" # This path is used for all uploaded file types.
-os.makedirs(PDF_STORAGE_PATH, exist_ok=True)
-```
-- Sets a **directory** where uploaded documents will be stored.
-- Ensures that the directory exists before saving files.
+# In core/model_loader.py
+from .config import OLLAMA_BASE_URL, OLLAMA_EMBEDDING_MODEL_NAME, OLLAMA_LLM_NAME, RERANKER_MODEL_NAME
+# ... other imports ...
 
-```python
-# Cached functions to load models
 @st.cache_resource
 def get_embedding_model():
-    # ... (OllamaEmbeddings setup)
-    return OllamaEmbeddings(model="deepseek-r1:1.5b", base_url=OLLAMA_BASE_URL)
-
-@st.cache_resource
-def get_language_model():
-    # ... (OllamaLLM setup)
-    return OllamaLLM(model="deepseek-r1:1.5b", base_url=OLLAMA_BASE_URL)
-
-@st.cache_resource
-def get_reranker_model(model_name='cross-encoder/ms-marco-MiniLM-L-6-v2'):
-    # ... (CrossEncoder setup)
-    return CrossEncoder(model_name)
-
-EMBEDDING_MODEL = get_embedding_model()
-LANGUAGE_MODEL = get_language_model()
-RERANKER_MODEL = get_reranker_model() # RERANKER_MODEL_NAME is used by default
-```
-- Loads **DeepSeek** models for embeddings and language generation, and a **CrossEncoder model** (`ms-marco-MiniLM-L-6-v2`) for re-ranking. All models are loaded using `@st.cache_resource` for performance.
-  - `OllamaEmbeddings` → Converts text into vector embeddings.
-  - `OllamaLLM` → Generates responses, summaries, and keywords.
-  - `CrossEncoder` → Re-ranks search results for improved relevance.
-
-```python
-# Session state variables like DOCUMENT_VECTOR_DB, messages, document_processed, 
-# raw_documents, document_summary, document_keywords, bm25_index, bm25_corpus_chunks are initialized if not present.
-if "DOCUMENT_VECTOR_DB" not in st.session_state:
-    st.session_state.DOCUMENT_VECTOR_DB = InMemoryVectorStore(EMBEDDING_MODEL)
-# ... (other session state initializations)
-```
-- Uses **Streamlit session state** extensively to store:
-  - Vector database (`DOCUMENT_VECTOR_DB`), BM25 index (`bm25_index`), and related corpus chunks (`bm25_corpus_chunks`).
-  - Chat messages (`messages`).
-  - Status flags (`document_processed`, `uploaded_file_key`).
-  - Loaded document content (`raw_documents`, `uploaded_filename`).
-  - Generated summary (`document_summary`) and keywords (`document_keywords`).
-  - This ensures data persistence and state management across user interactions and reruns.
-
-### **3. Utility Functions**
-Error handling in these functions has been significantly improved to provide more specific feedback to the user.
-
-#### **3.1 Save Uploaded File**
-```python
-def save_uploaded_file(uploaded_file):
-    # ... (error handling for IO and other exceptions)
-```
-- **Saves** an uploaded file (PDF, DOCX, TXT) to disk under `PDF_STORAGE_PATH`.
-- **Handles errors** (e.g., I/O errors, permission issues) if saving fails.
-
-#### **3.2 Load Document (Formerly Load PDF Document)**
-```python
-def load_document(file_path):
-    # ... (logic to handle .pdf, .docx, .txt using PDFPlumberLoader, python-docx, and standard file reading)
-    # ... (specific error handling for each file type, e.g., PDFSyntaxError, PackageNotFoundError, UnicodeDecodeError, MemoryError)
-```
-- **Loads** text from PDF, DOCX, or TXT files. The function name was changed from `load_pdf_documents`.
-- Uses **PDFPlumberLoader** for PDFs.
-- Uses **python-docx** (imported as `docx`) for DOCX files.
-- Uses standard file reading for TXT files (UTF-8 encoding).
-- Includes robust error handling for corrupted files, unsupported types, encoding issues, and large files causing memory errors.
-
-#### **3.3 Split Documents into Chunks**
-```python
-def chunk_documents(raw_documents):
-    # ... (handles empty raw_documents, improved warnings for no processable chunks)
-    # ... (uses RecursiveCharacterTextSplitter)
-```
-- Uses **RecursiveCharacterTextSplitter** to break the document into chunks.
-  - **Chunk Size:** 1000 characters.
-  - **Overlap:** 200 characters → Helps retain context between chunks.
-- **Prepares the text** for vector storage. Handles cases where no processable chunks are found.
-
-#### **3.4 Index Documents in the Vector Store**
-```python
-def index_documents(document_chunks):
-    # ... (handles empty document_chunks, improved error messages)
-```
-- **Adds** the processed text chunks to the **in-memory vector store** (`st.session_state.DOCUMENT_VECTOR_DB`) for semantic search.
-- Alongside vector indexing, a **BM25 index** is also created from the same document chunks (`st.session_state.bm25_index` and `st.session_state.bm25_corpus_chunks` are populated). This allows for keyword-based search.
-
-#### **3.5 Perform Hybrid Search (Retrieval)**
-```python
-def find_related_documents(query):
-    # ... (performs semantic search using DOCUMENT_VECTOR_DB.similarity_search)
-    # ... (performs BM25 search using bm25_index.get_scores if bm25_index is available)
-```
-- This function, formerly just "Perform Similarity Search," now executes a **hybrid search strategy**:
-  - It performs a **semantic search** using the vector store (FAISS via `InMemoryVectorStore`) to find `K_SEMANTIC` relevant chunks based on contextual meaning.
-  - It also performs a **keyword-based search** using the BM25 index to find `K_BM25` relevant chunks based on term frequency and inverse document frequency.
-- Returns a dictionary containing lists of results from both search methods (`{"semantic_results": ..., "bm25_results": ...}`).
-
-#### **3.6 Combine Search Results (Reciprocal Rank Fusion)**
-```python
-def combine_results_rrf(search_results_dict, k_param=K_RRF_PARAM):
-    # ... (calculates RRF scores and sorts documents)
-```
-- This function takes the results from `find_related_documents`.
-- It combines the document lists from semantic and BM25 searches using **Reciprocal Rank Fusion (RRF)**.
-- RRF assigns a score to each document based on its rank in each result list (score = 1 / (k_param + rank)). Scores for the same document from different lists are summed.
-- The final list of documents is de-duplicated and sorted by the combined RRF score.
-
-#### **3.7 Re-rank Documents (CrossEncoder)**
-```python
-def rerank_documents(query: str, documents: list, model: CrossEncoder, top_n: int = 3):
-    # ... (uses model.predict to get scores and re-sorts documents)
-```
-- This new function takes the user query and the list of documents (typically the output of `combine_results_rrf`).
-- It uses the pre-loaded `CrossEncoder` model (`RERANKER_MODEL`) to predict a relevance score for each (query, document_content) pair.
-- The documents are then re-sorted based on these new scores, and the top `FINAL_TOP_N_FOR_CONTEXT` documents are returned.
-- This step aims to further refine the relevance of documents before they are used as context for the LLM.
-- Includes fallbacks if the model is not loaded or if prediction fails.
-
-#### **3.8 Generate an Answer**
-```python
-def generate_answer(user_query, context_documents, conversation_history=""):
-    # ... (handles empty query/context, empty LLM response, improved error messages)
-```
-- **Constructs** context from retrieved document chunks.
-- **Formats** the prompt using `PROMPT_TEMPLATE`, now including `conversation_history`, `document_context`, and `user_query`.
-- **Generates a response** using the cached `LANGUAGE_MODEL`.
-- The `conversation_history` parameter allows the LLM to consider recent turns for better follow-up question understanding.
-
-#### **3.7 Generate Summary**
-```python
-SUMMARIZATION_PROMPT_TEMPLATE = """...""" # Defines how to ask the LLM for a summary
-def generate_summary(full_document_text):
-    # ... (handles empty document text, empty LLM response, improved error messages)
-```
-- Takes the full text of the document (from `st.session_state.raw_documents`).
-- Uses `SUMMARIZATION_PROMPT_TEMPLATE` and the cached `LANGUAGE_MODEL` to produce a concise summary.
-- The result is stored in `st.session_state.document_summary`.
-
-#### **3.8 Generate Keywords**
-```python
-KEYWORD_EXTRACTION_PROMPT_TEMPLATE = """...""" # Defines how to ask the LLM for keywords
-def generate_keywords(full_document_text):
-    # ... (handles empty document text, empty LLM response, improved error messages)
-```
-- Takes the full text of the document.
-- Uses `KEYWORD_EXTRACTION_PROMPT_TEMPLATE` and the cached `LANGUAGE_MODEL` to extract key phrases.
-- The result is stored in `st.session_state.document_keywords`.
-
-### **4. User Interface**
-The UI is built using Streamlit components.
-
-#### **4.1 App Title and Description**
-Standard title and markdown for introduction.
-
-#### **4.2 Sidebar Controls**
-```python
-with st.sidebar:
-    st.header("Controls")
-    if st.button("Clear Chat History", key="clear_chat"): ...
-    if st.button("Reset Document", key="reset_document"): ...
-    if st.session_state.document_processed:
-        if st.button("Summarize Document", key="summarize_doc_button"): ...
-        if st.button("Extract Keywords", key="extract_keywords_button"): ...
-    # Logic to display summary and keywords from session state
-```
-- **Sidebar**: Contains controls for managing the session and accessing document analysis features.
-  - **Clear Chat History**: Clears `st.session_state.messages`.
-  - **Reset Document**: Resets the vector store (using the cached embedding model), clears all document-related session state (`document_processed`, `raw_documents`, `document_summary`, `document_keywords`, `messages`), and increments `uploaded_file_key` to reset the file uploader.
-  - **Summarize Document**: (Visible after document processing) Triggers `generate_summary` using `st.session_state.raw_documents` and displays the result.
-  - **Extract Keywords**: (Visible after document processing) Triggers `generate_keywords` using `st.session_state.raw_documents` and displays the result.
-- The summary and keywords are displayed in the sidebar using `st.sidebar.info` and `st.sidebar.text_area` respectively if they are successfully generated. Error messages from generation functions are typically shown via `st.error` by the functions themselves.
-
-#### **4.3 File Upload Section**
-```python
-uploaded_file = st.file_uploader( # Renamed from uploaded_pdf
-    "Upload Research Document (PDF, DOCX, TXT)", # Updated help text
-    type=["pdf", "docx", "txt"], # Accepts new types
+    logger.info(f"Attempting to load Embedding Model: {OLLAMA_EMBEDDING_MODEL_NAME} from: {OLLAMA_BASE_URL}")
+    try:
+        model = OllamaEmbeddings(model=OLLAMA_EMBEDDING_MODEL_NAME, base_url=OLLAMA_BASE_URL)
+        # ... (error handling for connection & other exceptions) ...
+        return model
     # ...
+
+# Similar functions for get_language_model() and get_reranker_model()
+```
+- `get_embedding_model()`: Loads the Ollama model specified by `OLLAMA_EMBEDDING_MODEL_NAME` from `core/config.py` for text embeddings.
+- `get_language_model()`: Loads the Ollama model specified by `OLLAMA_LLM_NAME` from `core/config.py` for text generation.
+- `get_reranker_model()`: Loads the CrossEncoder model specified by `RERANKER_MODEL_NAME` from `core/config.py` for re-ranking search results.
+- In `rag_deep.py`, these models are initialized at startup:
+  ```python
+  EMBEDDING_MODEL = get_embedding_model()
+  LANGUAGE_MODEL = get_language_model()
+  RERANKER_MODEL = get_reranker_model()
+  ```
+- Enhanced error handling is included, especially for Ollama connection issues. If core models (`EMBEDDING_MODEL`, `LANGUAGE_MODEL`) fail to load, `rag_deep.py` will display an error and halt.
+
+## **4. Session State Management (`core/session_manager.py`)**
+Session state initialization and reset logic are managed by functions in `core/session_manager.py`.
+
+```python
+# In core/session_manager.py
+def initialize_session_state():
+    if "DOCUMENT_VECTOR_DB" not in st.session_state:
+        st.session_state.DOCUMENT_VECTOR_DB = InMemoryVectorStore(get_embedding_model())
+    # ... other initializations for messages, document_processed, uploaded_filenames, etc. ...
+
+def reset_document_states(clear_chat=True):
+    st.session_state.DOCUMENT_VECTOR_DB = InMemoryVectorStore(get_embedding_model())
+    # ... resets document_processed, uploaded_filenames, raw_documents, summary, keywords, bm25_index, etc. ...
+    if clear_chat:
+        st.session_state.messages = []
+```
+- `initialize_session_state()`: Called at the start of `rag_deep.py` to ensure all necessary session state variables (`DOCUMENT_VECTOR_DB`, `messages`, `uploaded_filenames`, `raw_documents`, etc.) are initialized if they don't exist.
+- `reset_document_states()`: Encapsulates the logic to clear all document-related data (vector store, raw documents, processed flags, analysis results) and optionally the chat history. This is used by the "Reset" button and when new files are uploaded.
+- `reset_file_uploader()`: Increments a key for `st.file_uploader` to ensure it resets.
+
+## **5. Core Logic Modules**
+The application's main functionalities are broken down into specific modules within the `core` package.
+
+### **5.1 Document Processing (`core/document_processing.py`)**
+Handles the lifecycle of documents from upload to indexing.
+- **`save_uploaded_file(uploaded_file)`**: Saves an uploaded file to the path specified by `PDF_STORAGE_PATH` (from `core/config.py`).
+- **`load_document(file_path)`**: Loads text from PDF (using `PDFPlumberLoader`), DOCX (using `python-docx`), or TXT files. Includes specific error handling for each format. Returns a list of Langchain `Document` objects.
+- **`chunk_documents(raw_documents)`**: Takes a list of Langchain `Document` objects (potentially from multiple files) and splits them into smaller chunks using `RecursiveCharacterTextSplitter`.
+- **`index_documents(document_chunks)`**: Adds the processed text chunks to the in-memory vector store (`st.session_state.DOCUMENT_VECTOR_DB`). It also sets `st.session_state.document_processed = True` upon success.
+
+### **5.2 Search Pipeline (`core/search_pipeline.py`)**
+Manages the multi-stage process of retrieving and ranking relevant document chunks.
+- **`find_related_documents(...)`**: Performs a hybrid search:
+    - **Semantic Search**: Uses the vector store (`st.session_state.DOCUMENT_VECTOR_DB`) for similarity search.
+    - **BM25 Search**: Uses `st.session_state.bm25_index` for keyword-based search.
+    - Returns a dictionary of results from both methods.
+- **`combine_results_rrf(search_results_dict)`**: Merges results from semantic and BM25 searches using Reciprocal Rank Fusion (RRF), returning a de-duplicated, re-scored list of document chunks.
+- **`rerank_documents(query, documents, model, top_n)`**: Uses the `CrossEncoder` model (`RERANKER_MODEL`) to further re-rank the combined search results based on relevance to the query.
+
+### **5.3 Generation (`core/generation.py`)**
+Responsible for generating text using the language model.
+- **`generate_answer(language_model, user_query, context_documents, conversation_history)`**: Constructs a prompt from the user's query, retrieved context documents, and conversation history, then invokes the `LANGUAGE_MODEL` to generate an answer.
+- **`generate_summary(language_model, full_document_text)`**: Takes the combined text from all uploaded documents and uses the `LANGUAGE_MODEL` with `SUMMARIZATION_PROMPT_TEMPLATE` (from `core/config.py`) to produce a summary.
+- **`generate_keywords(language_model, full_document_text)`**: Similar to summary generation, but uses `KEYWORD_EXTRACTION_PROMPT_TEMPLATE` to extract keywords from the combined document text.
+
+## **6. User Interface (`rag_deep.py`)**
+The main `rag_deep.py` script orchestrates the UI and calls functions from the `core` modules.
+
+#### **6.1 Sidebar Controls**
+- **Clear Chat History**: Clears `st.session_state.messages`.
+- **Reset All Documents & Chat**: Calls `reset_document_states(clear_chat=True)` and `reset_file_uploader()` from `core.session_manager`.
+- **Summarize Uploaded Content**: (Visible after documents are processed)
+    - Concatenates `page_content` from all documents in `st.session_state.raw_documents`.
+    - Calls `generate_summary()` from `core.generation` with the combined text.
+    - Displays the result.
+- **Extract Keywords from Content**: (Visible after documents are processed)
+    - Similar to summarization, calls `generate_keywords()` from `core.generation` with the combined text.
+
+#### **6.2 File Upload and Processing**
+```python
+# In rag_deep.py
+uploaded_files = st.file_uploader(
+    "Upload Research Documents (PDF, DOCX, TXT)",
+    accept_multiple_files=True, ...
 )
-```
-- Allows users to **upload PDF, DOCX, or TXT documents**.
-- Uses a key based on `st.session_state.uploaded_file_key` to allow programmatic reset of the uploader.
 
-#### **4.4 Process Uploaded Document**
-```python
-if uploaded_file:
-    # Logic to reset state if a new file is uploaded (vector store, session states for summary, keywords etc.)
-    if not st.session_state.document_processed:
-        with st.spinner(f"Processing '{uploaded_file.name}'..."):
-            saved_path = save_uploaded_file(uploaded_file)
+if uploaded_files:
+    current_uploaded_file_names = sorted([f.name for f in uploaded_files])
+    if set(current_uploaded_file_names) != set(st.session_state.get('uploaded_filenames', [])):
+        reset_document_states(clear_chat=True) # From core.session_manager
+        # ...
+        for uploaded_file_obj in uploaded_files:
+            saved_path = save_uploaded_file(uploaded_file_obj) # From core.document_processing
             if saved_path:
-                raw_docs = load_document(saved_path) # Uses the updated load_document
-                if raw_docs:
-                    st.session_state.raw_documents = raw_docs # Store for summarization/keywords
-                    processed_chunks = chunk_documents(raw_docs)
-                    if processed_chunks:
-                        index_documents(processed_chunks)
-                        # ... success/error messages reflecting improved error handling
-```
-- If a **document is uploaded**:
-  1. **Resets state** if it's a new document or if "Reset Document" was used. This includes clearing the vector store and session state for summary, keywords, etc.
-  2. **Saves** the file.
-  3. **Loads** text from the document using the updated `load_document` function (handles errors).
-  4. Stores the raw loaded documents in `st.session_state.raw_documents` for use by summarization and keyword extraction features.
-  5. **Splits** the text into chunks.
-  6. **Indexes** the text into the vector store.
-  7. Provides comprehensive success or error messages at each step, leveraging the improved error handling.
+                raw_docs_from_file = load_document(saved_path) # From core.document_processing
+                # ... accumulate raw_docs_from_file ...
 
-#### **4.5 Chat Input and Interaction**
-```python
-if st.session_state.document_processed:
-    user_input = st.chat_input(...)
-    if user_input:
-        # ... (logic to format recent st.session_state.messages into formatted_history)
-        retrieved_results_dict = find_related_documents(user_input)
-        hybrid_search_docs = combine_results_rrf(retrieved_results_dict)
-        if hybrid_search_docs:
-            docs_for_reranking = hybrid_search_docs[:TOP_K_FOR_RERANKER]
-            if RERANKER_MODEL:
-                final_context_docs = rerank_documents(user_input, docs_for_reranking, RERANKER_MODEL, top_n=FINAL_TOP_N_FOR_CONTEXT)
-            else: # Fallback
-                final_context_docs = docs_for_reranking[:FINAL_TOP_N_FOR_CONTEXT]
-        else:
-            final_context_docs = []
-        # ... (generate_answer(context_documents=final_context_docs, ...))
-        # ... (display user and assistant messages)
-else:
-    st.info("Please upload a PDF, DOCX, or TXT document to begin your session.") # Updated info message
+        # If documents were successfully loaded:
+        st.session_state.raw_documents = all_raw_docs_for_session
+        processed_chunks = chunk_documents(st.session_state.raw_documents) # From core.document_processing
+        if processed_chunks:
+            index_documents(processed_chunks) # From core.document_processing
+            # ... setup BM25 index ...
 ```
-- Chat input is available only if a document has been successfully processed.
-- If a **user asks a question**:
-  1. **Formats recent chat history**.
-  2. Retrieves results from both semantic and BM25 search using `find_related_documents`.
-  3. Combines these results using `combine_results_rrf` to get a ranked list of unique document chunks (`hybrid_search_docs`).
-  4. The top `TOP_K_FOR_RERANKER` documents from this list are then passed to `rerank_documents`.
-  5. `rerank_documents` uses the CrossEncoder model to re-score and sort these documents, returning the top `FINAL_TOP_N_FOR_CONTEXT`.
-  6. This final, re-ranked list is used as context for `generate_answer`.
-  7. Displays the user's question and the assistant's response.
-- An initial informational message prompts the user to upload a document of any supported type.
+- **Multi-Document Upload**: `st.file_uploader` is configured with `accept_multiple_files=True`.
+- **Processing Loop**:
+  1. If a new set of files is uploaded, `reset_document_states()` is called.
+  2. Each uploaded file is processed individually:
+     - Saved using `save_uploaded_file()`.
+     - Loaded using `load_document()`. Text content from all successfully loaded files is aggregated.
+  3. The aggregated raw documents are stored in `st.session_state.raw_documents`.
+  4. This aggregated content is then chunked using `chunk_documents()`.
+  5. The resulting chunks (from all documents) are indexed together using `index_documents()` for semantic search and for BM25 index creation.
+- A list of successfully processed filenames is displayed in the UI.
 
-## **Summary**
-### **Key Features:**
-- **Upload and process PDF, DOCX, and TXT documents.**
-- **Efficient text extraction and chunking.**
+#### **6.3 Chat Input and Interaction**
+- If documents are processed, the chat input is displayed.
+- When a user submits a query:
+  1. Recent chat history is formatted.
+  2. `find_related_documents()` (from `core.search_pipeline`) is called, passing relevant session state items like the vector DB and BM25 index.
+  3. Results are combined with `combine_results_rrf()`.
+  4. Top results are re-ranked with `rerank_documents()`.
+  5. The final context documents are passed to `generate_answer()` (from `core.generation`).
+  6. The response is displayed in the chat.
+
+## **7. Multi-Document Handling**
+The application is designed to handle multiple documents seamlessly:
+- **Upload**: Users can upload several files at once.
+- **Processing**: All uploaded documents are processed together; their text is extracted, chunked, and indexed into a unified vector store and BM25 index.
+- **Search**: Queries search across the combined content of all processed documents.
+- **Summarization & Keywords**: These features operate on the aggregated text content of all uploaded documents, providing a holistic view.
+- **UI**: Clearly indicates when actions apply to "all documents" or "uploaded content."
+
+## **8. Logging (`core/logger_config.py`)**
+A new logging system has been implemented for improved diagnostics:
+- **Setup**: `core/logger_config.py` contains `setup_logging()`, called once at application startup in `rag_deep.py`.
+- **Configuration**:
+    - Uses the standard Python `logging` module.
+    - Creates a logger named "rag_app" (and child loggers like "rag_app.core.module_name").
+    - Log level is configurable via the `LOG_LEVEL` environment variable (defaults to `INFO`).
+    - Logs are formatted to include timestamp, level, logger name, and message, and are output to `sys.stdout`.
+- **Usage**:
+    - `print()` statements previously used for debugging have been replaced with `logger.info()`, `logger.debug()`, etc., in all modules.
+    - `logger.error()` or `logger.exception()` are used to log detailed error information (including stack traces) when exceptions occur, often supplementing user-facing `st.error()` messages.
+
+## **9. Error Handling**
+- **Specific Error Catching**: Functions in `core.document_processing` catch specific errors related to file types (e.g., `PDFSyntaxError`, `docx.opc.exceptions.PackageNotFoundError`).
+- **Model Loading**: `core.model_loader` now specifically catches `requests.exceptions.ConnectionError` for Ollama models and provides user-friendly `st.error` messages. The main `rag_deep.py` script checks if core models (embedding, language) loaded successfully and halts with an error if not.
+- **Graceful Degradation**: If the reranker model fails to load, re-ranking is disabled, and the application continues with the results from the hybrid search.
+- **User Feedback**: `st.error`, `st.warning`, and `st.info` are used to provide clear feedback to the user, while more detailed logs are captured in the backend.
+
+## **Summary of Key Features (Updated)**
+- **Upload and process multiple PDF, DOCX, and TXT documents simultaneously.**
+- **Modular codebase with logic organized into a `core` package.**
+- **Configuration via Environment Variables** for Ollama settings, model names, storage paths, and log levels.
+- **Efficient text extraction and chunking of combined document content.**
 - **Advanced Retrieval Pipeline**:
-  - **Hybrid Search**: Combines semantic (vector) search with keyword-based (BM25) search.
-  - **Reciprocal Rank Fusion (RRF)**: Merges results from hybrid search.
-  - **Re-ranking**: Further refines relevance using a CrossEncoder model (`ms-marco-MiniLM-L-6-v2`).
-- **Query documents using natural language, with conversation history for contextual follow-up questions.**
-- **Generate concise document summaries.**
-- **Extract relevant keywords.**
+  - **Hybrid Search**: Semantic (vector) + keyword (BM25) search across all documents.
+  - **Reciprocal Rank Fusion (RRF)**: Merges hybrid search results.
+  - **Re-ranking**: Refines relevance using a CrossEncoder model.
+- **Query combined document content using natural language, with conversation history.**
+- **Generate summaries and keywords from the aggregated text of all documents.**
+- **Structured Logging System** for improved diagnostics.
+- **Enhanced Error Handling** with more specific messages and critical failure checks.
 - **Chat interface for interaction.**
-- **Controls for clearing chat and resetting documents in the sidebar.**
-- **Improved error handling and user feedback throughout the application.**
-- **Performance optimization with model caching (`@st.cache_resource` for Ollama, Embedding, and Re-ranker models).**
+- **Controls for clearing chat and resetting all documents.**
+- **Performance optimization with model caching.**
 
-This app is a **powerful research assistant** that leverages **LangChain, Ollama (with DeepSeek models), Sentence Transformers, and Streamlit** to provide an **interactive, AI-powered document analysis** experience for multiple file formats.
-The screenshots in this document may not reflect the latest UI with sidebar controls, but the textual descriptions are updated.
+This refactored application provides a robust, configurable, and maintainable platform for AI-powered document analysis.
