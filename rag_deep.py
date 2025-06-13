@@ -156,8 +156,10 @@ if "document_processed" not in st.session_state:
     st.session_state.document_processed = False
 if "uploaded_file_key" not in st.session_state:
     st.session_state.uploaded_file_key = 0
+if "uploaded_filenames" not in st.session_state: # Changed from uploaded_filename
+    st.session_state.uploaded_filenames = []     # Initialized as list
 if "raw_documents" not in st.session_state: # To store loaded documents before chunking
-    st.session_state.raw_documents = []
+    st.session_state.raw_documents = [] # This should be a list of lists of LangchainDocuments, or handle accumulation carefully
 if "document_summary" not in st.session_state: # To store the generated summary
     st.session_state.document_summary = None
 if "document_keywords" not in st.session_state: # To store extracted keywords
@@ -179,7 +181,11 @@ def save_uploaded_file(uploaded_file):
     try:
         with open(file_path, "wb") as file:
             file.write(uploaded_file.getbuffer())
-        st.session_state.uploaded_filename = uploaded_file.name # Store filename
+        # uploaded_filename is now a list, append new filename.
+        # This specific function handles one file at a time, so direct assignment or append might need context.
+        # For now, let's assume this function is called per file and the calling logic manages the list.
+        # However, the session state variable should be `uploaded_filenames`.
+        # This single function might be okay, but the overall logic needs to handle the list.
         return file_path
     except IOError as e: # More specific for file system issues
         st.error(f"Failed to save uploaded file '{uploaded_file.name}'. An I/O error occurred: {e.strerror}. Please check permissions and disk space.")
@@ -265,7 +271,7 @@ def chunk_documents(raw_documents):
             st.warning("Document chunking resulted in no processable text chunks. The document might be valid but contain no extractable text after initial processing, or the text is too short.")
         return processed_docs
     except Exception as e:
-        st.error(f"An error occurred while chunking documents from '{st.session_state.get('uploaded_filename', 'the file')}'. This may be due to unexpected document structure. Details: {e}")
+        st.error(f"An error occurred while chunking documents from '{st.session_state.get('uploaded_filenames', ['the file'])[0] if st.session_state.get('uploaded_filenames') else 'the file'}'. This may be due to unexpected document structure. Details: {e}")
         return []
 
 def index_documents(document_chunks):
@@ -277,9 +283,9 @@ def index_documents(document_chunks):
         return
     try:
         st.session_state.DOCUMENT_VECTOR_DB.add_documents(document_chunks)
-        st.session_state.document_processed = True 
+        st.session_state.document_processed = True
     except Exception as e:
-        st.error(f"An error occurred while indexing document chunks for '{st.session_state.get('uploaded_filename', 'the file')}'. Details: {e}")
+        st.error(f"An error occurred while indexing document chunks for '{st.session_state.get('uploaded_filenames', ['the file'])[0] if st.session_state.get('uploaded_filenames') else 'the file'}'. Details: {e}")
         st.session_state.document_processed = False
 
 def find_related_documents(query):
@@ -305,7 +311,7 @@ def find_related_documents(query):
         semantic_docs = st.session_state.DOCUMENT_VECTOR_DB.similarity_search(query, k=K_SEMANTIC)
         print(f"Semantic search found {len(semantic_docs)} results.")
     except Exception as e:
-        st.error(f"An error occurred during semantic search for '{st.session_state.get('uploaded_filename', 'the file')}'. Details: {e}")
+        st.error(f"An error occurred during semantic search for '{st.session_state.get('uploaded_filenames', ['the file'])[0] if st.session_state.get('uploaded_filenames') else 'the file'}'. Details: {e}")
         semantic_docs = [] # Ensure it's an empty list on error
 
     # 2. BM25 Search
@@ -330,7 +336,7 @@ def find_related_documents(query):
             print(f"BM25 search found {len(bm25_retrieved_chunks)} results with positive scores.")
 
         except Exception as e:
-            st.error(f"An error occurred during BM25 search for '{st.session_state.get('uploaded_filename', 'the file')}'. Details: {e}")
+            st.error(f"An error occurred during BM25 search for '{st.session_state.get('uploaded_filenames', ['the file'])[0] if st.session_state.get('uploaded_filenames') else 'the file'}'. Details: {e}")
             bm25_retrieved_chunks = [] # Ensure it's an empty list on error
     else:
         print("BM25 index not available. Skipping BM25 search.")
@@ -521,53 +527,53 @@ with st.sidebar:
         st.session_state.messages = []
         # No st.rerun() needed here, Streamlit automatically reruns on widget interaction.
 
-    if st.button("Reset Document", key="reset_document"):
+    if st.button("Reset All Documents & Chat", key="reset_document"): # Changed button label
         # Re-initialize with the cached embedding model
         st.session_state.DOCUMENT_VECTOR_DB = InMemoryVectorStore(get_embedding_model())
         st.session_state.document_processed = False
         st.session_state.messages = [] # Clear chat as well, as context is lost
         st.session_state.uploaded_file_key += 1 # Increment key to reset file uploader
-        if 'uploaded_filename' in st.session_state:
-            del st.session_state.uploaded_filename # Clear stored filename
+        if 'uploaded_filenames' in st.session_state: # Changed from uploaded_filename
+            st.session_state.uploaded_filenames = []   # Reset to empty list
         st.session_state.raw_documents = [] # Clear raw documents
         st.session_state.document_summary = None # Clear summary
         st.session_state.document_keywords = None # Clear keywords
         st.session_state.bm25_index = None # Clear BM25 index
         st.session_state.bm25_corpus_chunks = [] # Clear BM25 corpus
-        st.success("Document and chat reset. You can now upload a new document.")
+        st.success("All documents and chat reset. You can now upload new documents.") # Changed message
         st.rerun()
 
     if st.session_state.document_processed:
-        if st.button("Summarize Document", key="summarize_doc_button"):
+        if st.button("Summarize Uploaded Content", key="summarize_doc_button"): # Changed button label
             if st.session_state.raw_documents:
-                with st.spinner("Generating summary... This might take a few moments."):
+                with st.spinner("Generating summary for all documents... This might take a few moments."): # Changed spinner text
                     full_text = "\n\n".join([doc.page_content for doc in st.session_state.raw_documents])
                     if not full_text.strip():
-                        st.sidebar.warning("Cannot generate summary: The document content is effectively empty.")
+                        st.sidebar.warning("Cannot generate summary: Combined content of documents is effectively empty.") # Changed message
                         st.session_state.document_summary = None
                     else:
                         summary_text = generate_summary(full_text)
                         st.session_state.document_summary = summary_text # This might be None or an error message
             else:
-                st.sidebar.error("Cannot generate summary: Document content not loaded or available.")
+                st.sidebar.error("Cannot generate summary: Document content not loaded or available.") # Kept as is, still relevant
         
-        if st.button("Extract Keywords", key="extract_keywords_button"):
+        if st.button("Extract Keywords from Content", key="extract_keywords_button"): # Changed button label
             if st.session_state.raw_documents:
-                with st.spinner("Extracting keywords..."):
+                with st.spinner("Extracting keywords from all documents..."): # Changed spinner text
                     full_text = "\n\n".join([doc.page_content for doc in st.session_state.raw_documents])
                     if not full_text.strip():
-                        st.sidebar.warning("Cannot extract keywords: The document content is effectively empty.")
+                        st.sidebar.warning("Cannot extract keywords: Combined content of documents is effectively empty.") # Changed message
                         st.session_state.document_keywords = None
                     else:
                         keywords_text = generate_keywords(full_text)
                         st.session_state.document_keywords = keywords_text # This might be None or an error message
             else:
-                st.sidebar.error("Cannot extract keywords: Document content not loaded or available.")
+                st.sidebar.error("Cannot extract keywords: Document content not loaded or available.") # Kept as is, still relevant
     
     # Display summary if available and not an error message (error messages are shown by st.error within generate_summary)
     if st.session_state.document_summary and "Failed to generate summary" not in st.session_state.document_summary:
         st.sidebar.markdown("---")
-        st.sidebar.subheader("📄 Document Summary")
+        st.sidebar.subheader("📄 Combined Content Summary") # Changed subheader
         st.sidebar.info(st.session_state.document_summary)
     elif st.session_state.document_summary and "Failed to generate summary" in st.session_state.document_summary:
         # Error already displayed by st.error in generate_summary, clear it from session state so it doesn't persist as "info"
@@ -577,7 +583,7 @@ with st.sidebar:
     # Display keywords if available and not an error message
     if st.session_state.document_keywords and "Failed to extract keywords" not in st.session_state.document_keywords:
         st.sidebar.markdown("---")
-        st.sidebar.subheader("🔑 Extracted Keywords")
+        st.sidebar.subheader("🔑 Extracted Keywords (Combined)") # Changed subheader
         # Using st.text for keywords as they might be long and st.success has a specific connotation
         st.sidebar.text_area("Keywords:", st.session_state.document_keywords, height=100, disabled=True)
     elif st.session_state.document_keywords and "Failed to extract keywords" in st.session_state.document_keywords:
@@ -589,60 +595,86 @@ st.markdown("---")
 
 # File Upload Section
 uploaded_file = st.file_uploader(
-    "Upload Research Document (PDF, DOCX, TXT)",
+    "Upload Research Documents (PDF, DOCX, TXT)",
     type=["pdf", "docx", "txt"],
-    help="Select a PDF, DOCX, or TXT document for analysis. The previous document and chat will be reset.",
-    accept_multiple_files=False,
+    help="Select one or more PDF, DOCX, or TXT documents for analysis. Processing will begin upon upload. Re-uploading or changing files will reset the session.",
+    accept_multiple_files=True,
     key=f"file_uploader_{st.session_state.uploaded_file_key}" # Use key to allow reset
 )
 
-if uploaded_file:
-    # If a new file is uploaded, effectively reset the document state
-    if not st.session_state.get('uploaded_filename') or st.session_state.uploaded_filename != uploaded_file.name:
-        # Re-initialize with the cached embedding model
-        st.session_state.DOCUMENT_VECTOR_DB = InMemoryVectorStore(get_embedding_model())
+if uploaded_file: # This will now be a list of files if multiple are uploaded
+    uploaded_file_names = sorted([f.name for f in uploaded_file]) # Get names of newly uploaded files
+
+    # Check if the new set of files is different from the currently processed ones
+    if set(uploaded_file_names) != set(st.session_state.get('uploaded_filenames', [])):
+        st.session_state.DOCUMENT_VECTOR_DB = InMemoryVectorStore(get_embedding_model()) # Reset DB
         st.session_state.document_processed = False
-        st.session_state.messages = [] # Clear chat as well
-        st.session_state.raw_documents = [] # Clear raw documents for new file
-        st.session_state.document_summary = None # Clear previous summary
-        st.session_state.document_keywords = None # Clear previous keywords
-        st.session_state.bm25_index = None # Clear BM25 index for new file
-        st.session_state.bm25_corpus_chunks = [] # Clear BM25 corpus for new file
-        if 'uploaded_filename' in st.session_state:
-             del st.session_state.uploaded_filename
+        st.session_state.messages = []
+        st.session_state.raw_documents = [] # Reset raw documents list
+        st.session_state.document_summary = None
+        st.session_state.document_keywords = None
+        st.session_state.bm25_index = None
+        st.session_state.bm25_corpus_chunks = []
+        st.session_state.uploaded_filenames = [] # Reset stored filenames
 
-    if not st.session_state.document_processed:
-        with st.spinner(f"Processing '{uploaded_file.name}'... This may take a moment."):
-            saved_path = save_uploaded_file(uploaded_file)
-            if saved_path:
-                raw_docs = load_document(saved_path)
-                if raw_docs:
-                    st.session_state.raw_documents = raw_docs # Store raw documents
-                    processed_chunks = chunk_documents(raw_docs)
-                    if processed_chunks: 
-                        # Vector Indexing (Existing)
-                        index_documents(processed_chunks) 
+        all_raw_docs_for_session = [] # Accumulate raw docs from all uploaded files in this batch
 
-                        # BM25 Indexing (New)
-                        if st.session_state.document_processed: # Proceed only if vector indexing was successful
-                            try:
-                                corpus_texts = [chunk.page_content for chunk in processed_chunks]
-                                tokenized_corpus = [doc.lower().split(" ") for doc in corpus_texts]
-                                
-                                st.session_state.bm25_index = BM25Okapi(tokenized_corpus)
-                                st.session_state.bm25_corpus_chunks = processed_chunks
-                                print(f"BM25 index created for {st.session_state.get('uploaded_filename', 'document')}")
-                                # Success message updated to reflect both types of indexing
-                                st.success(f"✅ Document '{uploaded_file.name}' processed and indexed (Vector & BM25) successfully! You can now ask questions or use analysis tools in the sidebar.")
-                            except Exception as e:
-                                st.error(f"Failed to create BM25 index for '{uploaded_file.name}'. Details: {e}")
-                                # Potentially mark BM25 indexing as failed if needed for other logic
-                        else:
-                            # Error message would have been shown by index_documents or preceding functions
-                            st.error(f"Document '{uploaded_file.name}' processed but failed during vector indexing. BM25 indexing skipped.")
-                    # else: Error message would have been shown by chunk_documents or load_document
-                # else: Error message would have been shown by load_document
-            # else: Error message would have been shown by save_uploaded_file
+        for current_file_obj in uploaded_file:
+            with st.spinner(f"Processing '{current_file_obj.name}'... This may take a moment."):
+                saved_path = save_uploaded_file(current_file_obj) # save_uploaded_file still takes one file
+                if saved_path:
+                    # Load documents from the current file
+                    raw_docs_from_file = load_document(saved_path)
+                    if raw_docs_from_file:
+                        all_raw_docs_for_session.extend(raw_docs_from_file)
+                        st.session_state.uploaded_filenames.append(current_file_obj.name) # Add to list of processed filenames
+                        print(f"Successfully loaded and added {current_file_obj.name} to processing queue.")
+                    else:
+                        st.error(f"Could not load document from '{current_file_obj.name}'. It might be empty or corrupted.")
+                else:
+                    st.error(f"Failed to save '{current_file_obj.name}'. It will be skipped.")
+
+        # After processing all files in the current upload batch
+        if all_raw_docs_for_session:
+            st.session_state.raw_documents = all_raw_docs_for_session # Store all raw documents from this session
+
+            with st.spinner(f"Chunking and indexing {len(st.session_state.uploaded_filenames)} document(s)..."):
+                processed_chunks = chunk_documents(st.session_state.raw_documents) # Chunk all combined documents
+                if processed_chunks:
+                    index_documents(processed_chunks) # Index all chunks together
+
+                    if st.session_state.document_processed: # Check if vector indexing was successful
+                        try:
+                            corpus_texts = [chunk.page_content for chunk in processed_chunks]
+                            tokenized_corpus = [doc.lower().split(" ") for doc in corpus_texts]
+
+                            st.session_state.bm25_index = BM25Okapi(tokenized_corpus)
+                            st.session_state.bm25_corpus_chunks = processed_chunks
+                            display_filenames = ", ".join(st.session_state.uploaded_filenames)
+                            print(f"BM25 index created for documents: {display_filenames}")
+                            st.success(f"✅ Documents ({display_filenames}) processed and indexed successfully!") # Simplified message
+                        except Exception as e:
+                            display_filenames = ", ".join(st.session_state.uploaded_filenames)
+                            st.error(f"Failed to create BM25 index for documents ({display_filenames}). Vector indexing may still be active. Details: {e}")
+                    else:
+                        display_filenames = ", ".join(st.session_state.uploaded_filenames)
+                        st.error(f"Documents ({display_filenames}) loaded but failed during vector indexing. BM25 indexing also skipped.")
+                else:
+                    st.warning("No processable content found after loading all uploaded documents. Indexing skipped.")
+        elif not st.session_state.uploaded_filenames and uploaded_file: # Files were uploaded but none were successfully loaded
+             st.warning("Although files were uploaded, none could be successfully processed. Please check file formats and content.")
+        # If st.session_state.uploaded_filenames has content, but all_raw_docs_for_session is empty,
+        # it means files were saved but load_document returned empty for all ofthem. (Handled by messages inside loop)
+
+
+# Display successfully processed filenames if any
+if st.session_state.get('uploaded_filenames') and st.session_state.get('document_processed'):
+    st.markdown("---")
+    st.markdown(f"**Successfully processed document(s):**")
+    for name in st.session_state.uploaded_filenames:
+        st.markdown(f"- _{name}_")
+    st.markdown("---")
+
 
 # Display existing chat messages
 for message in st.session_state.messages:
@@ -651,7 +683,14 @@ for message in st.session_state.messages:
 
 # Chat Input Section - only show if a document has been processed
 if st.session_state.document_processed:
-    user_input = st.chat_input(f"Ask a question about '{st.session_state.get('uploaded_filename', 'the current document')}'...")
+    if len(st.session_state.uploaded_filenames) > 1:
+        chat_placeholder = f"Ask a question about the {len(st.session_state.uploaded_filenames)} loaded documents..."
+    elif len(st.session_state.uploaded_filenames) == 1:
+        chat_placeholder = f"Ask a question about '{st.session_state.uploaded_filenames[0]}'..."
+    else: # Should not happen if document_processed is true, but as a fallback
+        chat_placeholder = "Ask a question about the loaded document(s)..."
+
+    user_input = st.chat_input(chat_placeholder)
     if user_input:
         if not user_input.strip():
             st.warning("Please enter a question.")
@@ -686,11 +725,11 @@ if st.session_state.document_processed:
                         with st.spinner(f"Re-ranking top {len(docs_for_reranking)} documents..."):
                             final_context_docs = rerank_documents(user_input, docs_for_reranking, RERANKER_MODEL, top_n=FINAL_TOP_N_FOR_CONTEXT)
                     else: # Fallback if reranker model is not available
-                        st.info("Re-ranker model not loaded. Using documents from hybrid search directly.")
+                        st.info("Re-ranker model not loaded. Using documents from hybrid search directly (top results).") # Clarified message
                         final_context_docs = docs_for_reranking[:FINAL_TOP_N_FOR_CONTEXT] # Take top N from hybrid results
 
                     if not final_context_docs:
-                        ai_response = "After re-ranking, no relevant sections were found in the document to answer your query."
+                        ai_response = "After re-ranking, no relevant sections were found in the loaded documents to answer your query." # Pluralized
                         # No need to call generate_answer if context is empty
                     else:
                         # Context text is built from final_context_docs inside generate_answer
@@ -700,10 +739,10 @@ if st.session_state.document_processed:
                             conversation_history=formatted_history
                         )
                 else:
-                    ai_response = "I could not find relevant sections in the document to answer your query. Please ensure the document contains information related to your query or try rephrasing."
+                    ai_response = "I could not find relevant sections in the loaded documents to answer your query. Please ensure the documents contain information related to your query or try rephrasing." # Pluralized
             
             st.session_state.messages.append({"role": "assistant", "content": ai_response, "avatar": "🤖"})
             with st.chat_message("assistant", avatar="🤖"):
                 st.write(ai_response) # This will display the response or error/warning string from generate_answer
 else:
-    st.info("Please upload a PDF, DOCX, or TXT document to begin your session and ask questions.")
+    st.info("Please upload one or more PDF, DOCX, or TXT documents to begin your session and ask questions.") # Pluralized
