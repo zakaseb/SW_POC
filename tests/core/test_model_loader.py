@@ -53,12 +53,13 @@ def test_get_embedding_model_success(
     mock_embedding_instance = MagicMock()
     mock_ollama_embeddings_class.return_value = mock_embedding_instance
 
-    with patch.object(
-        config, "OLLAMA_EMBEDDING_MODEL_NAME", "test-embed-model"
-    ), patch.object(config, "OLLAMA_BASE_URL", "http://test-host:11434"):
+    # Patch the config variables directly in the model_loader's namespace
+    with patch('core.model_loader.OLLAMA_EMBEDDING_MODEL_NAME', "test-embed-model"), \
+         patch('core.model_loader.OLLAMA_BASE_URL', "http://test-host:11434"):
 
-        if hasattr(get_embedding_model, "clear_cache"):
-            get_embedding_model.clear_cache()
+        # The autouse fixture clear_model_loader_caches should handle cache clearing
+        # if hasattr(get_embedding_model, "clear_cache"): # Redundant due to fixture
+        #     get_embedding_model.clear_cache()
         model = get_embedding_model()
 
     mock_ollama_embeddings_class.assert_called_once_with(
@@ -83,12 +84,11 @@ def test_get_embedding_model_connection_error(
     mock_ollama_embeddings_class.side_effect = requests.exceptions.ConnectionError(
         "Test connection error"
     )
-    if hasattr(get_embedding_model, "clear_cache"):
-        get_embedding_model.clear_cache()
+    # Autouse fixture handles cache clearing
 
-    with patch.object(
-        config, "OLLAMA_BASE_URL", "http://nonexistent:11434"
-    ), patch.object(config, "OLLAMA_EMBEDDING_MODEL_NAME", "test-embed-model"):
+    # Patch where model_loader uses these config vars for error message construction or internal logic
+    with patch('core.model_loader.OLLAMA_BASE_URL', 'http://nonexistent:11434'), \
+         patch('core.model_loader.OLLAMA_EMBEDDING_MODEL_NAME', 'test-embed-model'):
         model = get_embedding_model()
 
     assert model is None
@@ -106,10 +106,9 @@ def test_get_embedding_model_other_exception(
     mock_logger, mock_st_error, mock_ollama_embeddings_class
 ):
     mock_ollama_embeddings_class.side_effect = Exception("Some other error")
-    if hasattr(get_embedding_model, "clear_cache"):
-        get_embedding_model.clear_cache()
+    # Autouse fixture handles cache clearing
 
-    with patch.object(config, "OLLAMA_EMBEDDING_MODEL_NAME", "test-embed-model"):
+    with patch('core.model_loader.OLLAMA_EMBEDDING_MODEL_NAME', 'test-embed-model'):
         model = get_embedding_model()
 
     assert model is None
@@ -131,12 +130,10 @@ def test_get_embedding_model_other_exception(
 def test_get_language_model_success(mock_logger, mock_st_error, mock_ollama_llm_class):
     mock_llm_instance = MagicMock()
     mock_ollama_llm_class.return_value = mock_llm_instance
-    if hasattr(get_language_model, "clear_cache"):
-        get_language_model.clear_cache()
+    # Autouse fixture handles cache clearing
 
-    with patch.object(config, "OLLAMA_LLM_NAME", "test-llm-model"), patch.object(
-        config, "OLLAMA_BASE_URL", "http://test-llm-host:11434"
-    ):
+    with patch('core.model_loader.OLLAMA_LLM_NAME', "test-llm-model"), \
+         patch('core.model_loader.OLLAMA_BASE_URL', "http://test-llm-host:11434"):
 
         model = get_language_model()
 
@@ -162,12 +159,10 @@ def test_get_language_model_connection_error(
     mock_ollama_llm_class.side_effect = requests.exceptions.ConnectionError(
         "Test LLM connection error"
     )
-    if hasattr(get_language_model, "clear_cache"):
-        get_language_model.clear_cache()
+    # Autouse fixture handles cache clearing
 
-    with patch.object(
-        config, "OLLAMA_BASE_URL", "http://nonexistent-llm:11434"
-    ), patch.object(config, "OLLAMA_LLM_NAME", "test-llm-model"):
+    with patch('core.model_loader.OLLAMA_BASE_URL', 'http://nonexistent-llm:11434'), \
+         patch('core.model_loader.OLLAMA_LLM_NAME', 'test-llm-model'):
         model = get_language_model()
 
     assert model is None
@@ -185,10 +180,9 @@ def test_get_language_model_other_exception(
     mock_logger, mock_st_error, mock_ollama_llm_class
 ):
     mock_ollama_llm_class.side_effect = Exception("Some other LLM error")
-    if hasattr(get_language_model, "clear_cache"):
-        get_language_model.clear_cache()
+    # Autouse fixture handles cache clearing
 
-    with patch.object(config, "OLLAMA_LLM_NAME", "test-llm-model"):
+    with patch('core.model_loader.OLLAMA_LLM_NAME', 'test-llm-model'):
         model = get_language_model()
 
     assert model is None
@@ -212,10 +206,9 @@ def test_get_reranker_model_success(
 ):
     mock_reranker_instance = MagicMock()
     mock_cross_encoder_class.return_value = mock_reranker_instance
-    if hasattr(get_reranker_model, "clear_cache"):
-        get_reranker_model.clear_cache()
+    # Autouse fixture handles cache clearing
 
-    with patch.object(config, "RERANKER_MODEL_NAME", "test-reranker-model"):
+    with patch('core.model_loader.RERANKER_MODEL_NAME', "test-reranker-model"):
         model = get_reranker_model()
 
     mock_cross_encoder_class.assert_called_once_with("test-reranker-model")
@@ -236,10 +229,9 @@ def test_get_reranker_model_exception(
     mock_logger, mock_st_error, mock_cross_encoder_class
 ):
     mock_cross_encoder_class.side_effect = Exception("Reranker load error")
-    if hasattr(get_reranker_model, "clear_cache"):
-        get_reranker_model.clear_cache()
+    # Autouse fixture handles cache clearing
 
-    with patch.object(config, "RERANKER_MODEL_NAME", "failing-reranker-model"):
+    with patch('core.model_loader.RERANKER_MODEL_NAME', 'failing-reranker-model'):
         model = get_reranker_model()
 
     assert model is None

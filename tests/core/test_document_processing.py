@@ -9,7 +9,8 @@ from langchain_core.documents import Document as LangchainDocument
 from docx.opc.exceptions import PackageNotFoundError
 
 # Specific error for PDF
-import pdfplumber
+import pdfplumber # Keep for pdfplumber.exceptions.PDFSyntaxError below if used directly
+from pdfplumber.exceptions import PDFSyntaxError # Import directly
 
 # Modules to test
 from core.document_processing import (
@@ -26,9 +27,9 @@ from core import config  # For PDF_STORAGE_PATH
 # used within document_processing.py, which is 'core.document_processing.logger'
 
 # Paths for mocking
-MOCK_OPEN_PATH = "builtins.open"
-OS_PATH_JOIN_PATH = "os.path.join"
-OS_PATH_BASENAME_PATH = "os.path.basename"  # Used by load_document
+MOCK_OPEN_PATH = "builtins.open" # Used by save_uploaded_file and load_document (for .txt)
+OS_PATH_JOIN_PATH = "core.document_processing.os.path.join" # Used by save_uploaded_file
+OS_PATH_BASENAME_PATH = "core.document_processing.os.path.basename"  # Used by load_document
 PDF_PLUMBER_LOADER_PATH = "core.document_processing.PDFPlumberLoader"
 DOCX_MODULE_PATH = "core.document_processing.docx"  # To mock docx.Document
 RECURSIVE_SPLITTER_PATH = "core.document_processing.RecursiveCharacterTextSplitter"
@@ -198,7 +199,8 @@ def test_load_document_non_existent_file(
     assert documents == []
     mock_st_error.assert_called_once()  # Check that st.error was called
     # More specific check for the logger message
-    mock_logger_fixture.exception.assert_called_once()
+    # FileNotFoundError is a subclass of IOError, which logs with logger.error in load_document
+    mock_logger_fixture.error.assert_called_once()
 
 
 @patch(OS_PATH_BASENAME_PATH, return_value="corrupted.docx")
@@ -245,7 +247,7 @@ def test_load_document_pdf_syntax_error(
     mock_st_error, mock_pdf_loader, mock_basename, mock_logger_fixture
 ):
     mock_loader_instance = mock_pdf_loader.return_value
-    mock_loader_instance.load.side_effect = pdfplumber.exceptions.PDFSyntaxError(
+    mock_loader_instance.load.side_effect = PDFSyntaxError( # Use direct import
         "Mocked PDF Syntax Error"
     )
     documents = load_document(CORRUPTED_PDF_PATH)

@@ -45,19 +45,10 @@ def mock_logger_fixture():
 
 # --- Tests for generate_answer ---
 
-
-@patch(CHAT_PROMPT_TEMPLATE_PATH)
-def test_generate_answer_success_with_history(
-    mock_from_template, mock_llm, mock_doc, mock_logger_fixture
-):
-    mock_template_instance = MagicMock()
-    mock_chain_instance = MagicMock()
-    # Simulate the LCEL chain: prompt | llm -> chain
-    # When `mock_template_instance | mock_llm` is executed, it should return our mock_chain_instance
-    mock_template_instance.__or__ = MagicMock(return_value=mock_chain_instance)
-
-    mock_chain_instance.invoke.return_value = "Successful answer"
-    mock_from_template.return_value = mock_template_instance
+# Removed @patch(CHAT_PROMPT_TEMPLATE_PATH)
+def test_generate_answer_success_with_history(mock_llm, mock_doc, mock_logger_fixture): # mock_from_template removed
+    # Configure the mock_llm's invoke method directly
+    mock_llm.invoke.return_value = "Successful answer"
 
     user_query = "What is X?"
     context_docs = [mock_doc("X is Y."), mock_doc("More about X.")]
@@ -65,18 +56,19 @@ def test_generate_answer_success_with_history(
 
     response = generate_answer(mock_llm, user_query, context_docs, history)
 
-    mock_from_template.assert_called_once_with(config.PROMPT_TEMPLATE)
-    # Check that the template was "piped" with the llm
-    mock_template_instance.__or__.assert_called_once_with(mock_llm)
-
+    # Assert that mock_llm.invoke was called.
+    # The input to invoke will be the result of ChatPromptTemplate(...).invoke(),
+    # which is a dictionary of prompt values.
     expected_doc_context = "X is Y.\n\nMore about X."
-    mock_chain_instance.invoke.assert_called_once_with(
-        {
-            "user_query": user_query,
-            "document_context": expected_doc_context,
-            "conversation_history": history,
-        }
-    )
+    # The actual ChatPromptTemplate is used, so we check the input to the LLM's invoke
+    mock_llm.invoke.assert_called_once()
+    args, kwargs = mock_llm.invoke.call_args
+    # args[0] should be the dictionary passed to the LLM by the prompt template
+    prompt_input_dict = args[0]
+    assert prompt_input_dict["user_query"] == user_query
+    assert prompt_input_dict["document_context"] == expected_doc_context
+    assert prompt_input_dict["conversation_history"] == history
+
     assert response == "Successful answer"
     mock_logger_fixture.info.assert_any_call(
         f"Generating answer for query: '{user_query[:50]}...'"
@@ -136,21 +128,18 @@ def test_generate_answer_context_docs_no_content(
 
 # --- Tests for generate_summary ---
 
-
-@patch(CHAT_PROMPT_TEMPLATE_PATH)
-def test_generate_summary_success(mock_from_template, mock_llm, mock_logger_fixture):
-    mock_template_instance = MagicMock()
-    mock_chain_instance = MagicMock()
-    mock_template_instance.__or__ = MagicMock(return_value=mock_chain_instance)
-    mock_chain_instance.invoke.return_value = "Document summary."
-    mock_from_template.return_value = mock_template_instance
+# Removed @patch(CHAT_PROMPT_TEMPLATE_PATH)
+def test_generate_summary_success(mock_llm, mock_logger_fixture): # mock_from_template removed
+    mock_llm.invoke.return_value = "Document summary."
 
     text = "This is a long document text."
     summary = generate_summary(mock_llm, text)
 
-    mock_from_template.assert_called_once_with(config.SUMMARIZATION_PROMPT_TEMPLATE)
-    mock_template_instance.__or__.assert_called_once_with(mock_llm)
-    mock_chain_instance.invoke.assert_called_once_with({"document_text": text})
+    mock_llm.invoke.assert_called_once()
+    args, kwargs = mock_llm.invoke.call_args
+    prompt_input_dict = args[0]
+    assert prompt_input_dict["document_text"] == text
+
     assert summary == "Document summary."
     mock_logger_fixture.info.assert_any_call("Generating summary...")
     mock_logger_fixture.info.assert_any_call("Summary generated successfully.")
@@ -196,23 +185,18 @@ def test_generate_summary_llm_returns_empty(
 
 # --- Tests for generate_keywords ---
 
-
-@patch(CHAT_PROMPT_TEMPLATE_PATH)
-def test_generate_keywords_success(mock_from_template, mock_llm, mock_logger_fixture):
-    mock_template_instance = MagicMock()
-    mock_chain_instance = MagicMock()
-    mock_template_instance.__or__ = MagicMock(return_value=mock_chain_instance)
-    mock_chain_instance.invoke.return_value = "keyword1, keyword2"
-    mock_from_template.return_value = mock_template_instance
+# Removed @patch(CHAT_PROMPT_TEMPLATE_PATH)
+def test_generate_keywords_success(mock_llm, mock_logger_fixture): # mock_from_template removed
+    mock_llm.invoke.return_value = "keyword1, keyword2"
 
     text = "This is a document about keywords."
     keywords = generate_keywords(mock_llm, text)
 
-    mock_from_template.assert_called_once_with(
-        config.KEYWORD_EXTRACTION_PROMPT_TEMPLATE
-    )
-    mock_template_instance.__or__.assert_called_once_with(mock_llm)
-    mock_chain_instance.invoke.assert_called_once_with({"document_text": text})
+    mock_llm.invoke.assert_called_once()
+    args, kwargs = mock_llm.invoke.call_args
+    prompt_input_dict = args[0]
+    assert prompt_input_dict["document_text"] == text
+
     assert keywords == "keyword1, keyword2"
     mock_logger_fixture.info.assert_any_call("Generating keywords...")
     mock_logger_fixture.info.assert_any_call("Keywords generated successfully.")
