@@ -116,7 +116,7 @@ def load_document(file_path):
                 return []
             except IOError as io_err:
                 user_message = f"Failed to load TXT file '{file_name}': An I/O error occurred. {io_err.strerror}."
-                logger.error(f"{user_message}")
+                logger.error(f"{user_message} Details: {io_err}") # Added Details: {io_err}
                 st.error(user_message)
                 return []
             except Exception as e:

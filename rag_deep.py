@@ -12,11 +12,11 @@ logger = get_logger(__name__)
 # Import from new core modules
 from core.config import (
     MAX_HISTORY_TURNS,
-    K_SEMANTIC,
-    K_BM25,
-    K_RRF_PARAM,
-    TOP_K_FOR_RERANKER,
-    FINAL_TOP_N_FOR_CONTEXT,
+    # K_SEMANTIC, # Removed as it's used in core.search_pipeline
+    # K_BM25, # Removed as it's used in core.search_pipeline
+    # K_RRF_PARAM, # Removed as it's used in core.search_pipeline
+    TOP_K_FOR_RERANKER, # Still used directly in rag_deep.py for slicing
+    FINAL_TOP_N_FOR_CONTEXT, # Still used directly in rag_deep.py for rerank_documents call
     PDF_STORAGE_PATH,
 )
 from core.model_loader import (
@@ -235,8 +235,9 @@ if uploaded_files:
     if set(current_uploaded_file_names) != set(
         st.session_state.get("uploaded_filenames", [])
     ):
-        logger.info("New set of files detected. Resetting document states.")
+        logger.info("New set of files detected. Resetting document states and file uploader.")
         reset_document_states(clear_chat=True)
+        reset_file_uploader() # Added call to reset file uploader widget
 
         all_raw_docs_for_session = []
         successfully_loaded_filenames = []
