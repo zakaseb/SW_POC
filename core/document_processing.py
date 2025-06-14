@@ -4,6 +4,7 @@ from langchain_community.document_loaders import PDFPlumberLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_core.documents import Document as LangchainDocument
 import docx
+from docx.opc.exceptions import PackageNotFoundError as DocxPackageNotFoundError # Import specific exception
 import pdfplumber
 from .config import PDF_STORAGE_PATH
 from .logger_config import get_logger
@@ -81,9 +82,9 @@ def load_document(file_path):
                         page_content=full_text, metadata={"source": file_name}
                     )
                 ]
-            except docx.opc.exceptions.PackageNotFoundError as docx_err:
+            except DocxPackageNotFoundError as e: # Use the imported alias
                 user_message = f"Failed to load DOCX '{file_name}': The file appears to be corrupted or not a valid DOCX file."
-                logger.error(f"{user_message} Details: {docx_err}")
+                logger.error(f"{user_message} Error: {e}") # Include the exception object e
                 st.error(user_message)
                 return []
             except Exception as e:

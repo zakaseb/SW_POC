@@ -105,15 +105,17 @@ def test_find_related_documents_success_both_searches(
     mock_bm25_index.get_scores.return_value = [0.5]
     bm25_corpus_chunks = [bm25_result_doc]
 
-    with patch.object(config, "K_SEMANTIC", 1), patch.object(config, "K_BM25", 1):
+    # Patch K_SEMANTIC and K_BM25 in the namespace of core.search_pipeline
+    with patch('core.search_pipeline.K_SEMANTIC', 1), \
+         patch('core.search_pipeline.K_BM25', 1):
         results = find_related_documents(
             "query", mock_vector_db, mock_bm25_index, bm25_corpus_chunks, True
         )
 
-    mock_vector_db.similarity_search.assert_called_once_with("query", k=1)
+    mock_vector_db.similarity_search.assert_called_once_with("query", k=1) # This should now use the patched k=1
     mock_bm25_index.get_scores.assert_called_once_with(
         ["query"]
-    )  # Assuming query is tokenized to ["query"]
+    )
     assert results["semantic_results"] == semantic_result
     assert results["bm25_results"] == [bm25_result_doc]
     mock_logger_fixture.info.assert_any_call("Semantic search found 1 results.")
@@ -156,11 +158,11 @@ def test_find_related_documents_only_bm25(
 
 
 def test_find_related_documents_no_results(
-    mock_vector_db, mock_bm25_index, mock_logger_fixture
+    mock_doc_factory, mock_vector_db, mock_bm25_index, mock_logger_fixture # Added mock_doc_factory
 ):
     mock_vector_db.similarity_search.return_value = []
     mock_bm25_index.get_scores.return_value = []
-    bm25_corpus_chunks = [mock_doc_factory("doc1"), mock_doc_factory("doc2")]
+    bm25_corpus_chunks = [mock_doc_factory("doc1"), mock_doc_factory("doc2")] # Correctly use the fixture
 
     results = find_related_documents(
         "query for no results",
