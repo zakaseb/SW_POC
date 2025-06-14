@@ -1,6 +1,7 @@
 import pytest
 import os
 from unittest.mock import patch, MagicMock, ANY
+import streamlit as st # Add this import to define 'st' in the test file's scope
 
 import sys
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
