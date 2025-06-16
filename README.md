@@ -1,6 +1,3 @@
-[![CodeQL Advanced](https://github.com/chintanboghara/DocuMind-AI/actions/workflows/codeql.yml/badge.svg)](https://github.com/chintanboghara/DocuMind-AI/actions/workflows/codeql.yml)
-[![Dependency Review](https://github.com/chintanboghara/DocuMind-AI/actions/workflows/dependency-review.yml/badge.svg)](https://github.com/chintanboghara/DocuMind-AI/actions/workflows/dependency-review.yml)
-
 # DocuMind-AI: Intelligent Document Assistant
 
 **DocuMind-AI** is an AI-powered document assistant that allows users to upload documents (PDF, DOCX, TXT), process their contents, and interactively ask questions about them. Built with Streamlit and LangChain, it leverages embeddings and language models to provide concise, factual answers, summaries, and keyword extractions based on the document's context. This tool is ideal for researchers, students, and professionals who need to quickly extract insights from various document formats.
