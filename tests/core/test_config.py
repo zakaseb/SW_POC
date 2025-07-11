@@ -46,7 +46,7 @@ def test_ollama_embedding_model_name_default():
         if "OLLAMA_EMBEDDING_MODEL_NAME" in os.environ:
             del os.environ["OLLAMA_EMBEDDING_MODEL_NAME"]
         importlib.reload(config)
-        assert config.OLLAMA_EMBEDDING_MODEL_NAME == "deepseek-r1:1.5b"
+        assert config.OLLAMA_EMBEDDING_MODEL_NAME == "llama3.1:70b"
 
 
 def test_ollama_embedding_model_name_env_override():
@@ -61,7 +61,7 @@ def test_ollama_llm_name_default():
         if "OLLAMA_LLM_NAME" in os.environ:
             del os.environ["OLLAMA_LLM_NAME"]
         importlib.reload(config)
-        assert config.OLLAMA_LLM_NAME == "deepseek-r1:1.5b"
+        assert config.OLLAMA_LLM_NAME == "llama3.1:70b"
 
 
 def test_ollama_llm_name_env_override():
