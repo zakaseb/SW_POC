@@ -194,6 +194,6 @@ def index_documents(document_chunks):
         logger.info("Document chunks indexed successfully into vector store.")
     except Exception as e:
         user_message = "An error occurred while indexing document chunks."
-        logger.exception(f"{user_message} Detals: {e}")
+        logger.exception(f"{user_message} Details: {e}")
         st.error(f"{user_message} Check logs for details.")
         st.session_state.document_processed = False
