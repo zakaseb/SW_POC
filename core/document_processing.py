@@ -1,21 +1,25 @@
 import os
 import streamlit as st
 from langchain_community.document_loaders import PDFPlumberLoader
-from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_core.documents import Document as LangchainDocument
 import docx
-from docx.opc.exceptions import PackageNotFoundError as DocxPackageNotFoundError # Import specific exception
+from docx.opc.exceptions import PackageNotFoundError as DocxPackageNotFoundError
 import pdfplumber
+from sympy import false
+
 from .config import PDF_STORAGE_PATH
 from .logger_config import get_logger
 
+# Docling imports
+from docling.document_converter import DocumentConverter
+from docling.chunking import HybridChunker
+from docling_core.transforms.chunker.tokenizer.huggingface import HuggingFaceTokenizer
+from transformers import AutoTokenizer
+from urllib.parse import unquote
+
 logger = get_logger(__name__)
 
-
 def save_uploaded_file(uploaded_file):
-    """
-    Save the uploaded file to disk and return the file path.
-    """
     file_path = os.path.join(PDF_STORAGE_PATH, uploaded_file.name)
     try:
         with open(file_path, "wb") as file:
@@ -28,18 +32,12 @@ def save_uploaded_file(uploaded_file):
         st.error(user_message)
         return None
     except Exception as e:
-        user_message = (
-            f"An unexpected error occurred while saving '{uploaded_file.name}'."
-        )
+        user_message = f"An unexpected error occurred while saving '{uploaded_file.name}'."
         logger.exception(f"{user_message} Details: {e}")
         st.error(f"{user_message} Check logs for details.")
         return None
 
-
 def load_document(file_path):
-    """
-    Load documents from PDF, DOCX, or TXT files.
-    """
     file_extension = os.path.splitext(file_path)[1].lower()
     file_name = os.path.basename(file_path)
 
@@ -49,9 +47,7 @@ def load_document(file_path):
                 logger.debug(f"Loading PDF: {file_name}")
                 document_loader = PDFPlumberLoader(file_path)
                 docs = document_loader.load()
-                logger.info(
-                    f"Successfully loaded PDF: {file_name}, {len(docs)} pages/documents."
-                )
+                logger.info(f"Successfully loaded PDF: {file_name}, {len(docs)} pages/documents.")
                 return docs
             except pdfplumber.exceptions.PDFSyntaxError as pdf_err:
                 user_message = f"Failed to load PDF '{file_name}': The file may be corrupted or not a valid PDF."
@@ -69,28 +65,18 @@ def load_document(file_path):
                 doc = docx.Document(file_path)
                 full_text = "\n".join([para.text for para in doc.paragraphs])
                 if not full_text.strip():
-                    logger.warning(
-                        f"DOCX file '{file_name}' is empty or contains no text."
-                    )
-                    st.warning(
-                        f"DOCX file '{file_name}' appears to be empty or contains no text."
-                    )
+                    logger.warning(f"DOCX file '{file_name}' is empty or contains no text.")
+                    st.warning(f"DOCX file '{file_name}' appears to be empty or contains no text.")
                     return []
                 logger.info(f"Successfully loaded DOCX: {file_name}")
-                return [
-                    LangchainDocument(
-                        page_content=full_text, metadata={"source": file_name}
-                    )
-                ]
-            except DocxPackageNotFoundError as e: # Use the imported alias
+                return [LangchainDocument(page_content=full_text, metadata={"source": file_name})]
+            except DocxPackageNotFoundError as e:
                 user_message = f"Failed to load DOCX '{file_name}': The file appears to be corrupted or not a valid DOCX file."
-                logger.error(f"{user_message} Error: {e}") # Include the exception object e
+                logger.error(f"{user_message} Error: {e}")
                 st.error(user_message)
                 return []
             except Exception as e:
-                user_message = (
-                    f"Failed to load DOCX '{file_name}': An unexpected error occurred."
-                )
+                user_message = f"Failed to load DOCX '{file_name}': An unexpected error occurred."
                 logger.exception(f"{user_message} Details: {e}")
                 st.error(f"{user_message} Check logs for details.")
                 return []
@@ -104,19 +90,15 @@ def load_document(file_path):
                     st.warning(f"Text file '{file_name}' appears to be empty.")
                     return []
                 logger.info(f"Successfully loaded TXT: {file_name}")
-                return [
-                    LangchainDocument(
-                        page_content=full_text, metadata={"source": file_name}
-                    )
-                ]
+                return [LangchainDocument(page_content=full_text, metadata={"source": file_name})]
             except UnicodeDecodeError as unicode_err:
-                user_message = f"Failed to load TXT file '{file_name}': The file is not UTF-8 encoded. Please ensure it's a plain text file with UTF-8 encoding."
+                user_message = f"Failed to load TXT file '{file_name}': The file is not UTF-8 encoded."
                 logger.error(f"{user_message} Details: {unicode_err}")
                 st.error(user_message)
                 return []
             except IOError as io_err:
                 user_message = f"Failed to load TXT file '{file_name}': An I/O error occurred. {io_err.strerror}."
-                logger.error(f"{user_message} Details: {io_err}") # Added Details: {io_err}
+                logger.error(f"{user_message} Details: {io_err}")
                 st.error(user_message)
                 return []
             except Exception as e:
@@ -125,7 +107,7 @@ def load_document(file_path):
                 st.error(f"{user_message} Check logs for details.")
                 return []
         else:
-            user_message = f"Unsupported file type: '{file_extension}' for file '{file_name}'. Please upload a PDF, DOCX, or TXT file."
+            user_message = f"Unsupported file type: '{file_extension}' for file '{file_name}'."
             logger.warning(user_message)
             st.error(user_message)
             return []
@@ -135,57 +117,63 @@ def load_document(file_path):
         st.error(user_message)
         return []
     except Exception as e:
-        user_message = (
-            f"An unexpected error occurred while attempting to load '{file_name}'."
-        )
+        user_message = f"An unexpected error occurred while attempting to load '{file_name}'."
         logger.exception(f"{user_message} Details: {e}")
         st.error(f"{user_message} Check logs for details.")
         return []
-
 
 def chunk_documents(raw_documents):
-    """
-    Split raw documents into manageable chunks using RecursiveCharacterTextSplitter.
-    """
     if not raw_documents:
         logger.warning("chunk_documents called with no raw documents.")
-        st.warning(
-            "No content found in the document to chunk."
-        )  # User feedback is fine
-        return []
-    logger.info(f"Starting to chunk {len(raw_documents)} raw document(s).")
-    try:
-        text_processor = RecursiveCharacterTextSplitter(
-            chunk_size=1000,
-            chunk_overlap=200,
-            add_start_index=True,
-        )
-        processed_docs = text_processor.split_documents(raw_documents)
-        if not processed_docs:
-            logger.warning("Document chunking resulted in no processable text chunks.")
-            st.warning(
-                "Document chunking resulted in no processable text chunks. The document might be valid but contain no extractable text after initial processing, or the text is too short."
-            )  # User feedback fine
-        else:
-            logger.info(f"Chunking complete, {len(processed_docs)} chunks created.")
-        return processed_docs
-    except Exception as e:
-        user_message = "An error occurred while chunking documents. This may be due to unexpected document structure."
-        logger.exception(f"{user_message} Details: {e}")
-        st.error(f"{user_message} Check logs for details.")
+        st.warning("No content found in the document to chunk.")
         return []
 
+    logger.info(f"Starting Docling hybrid chunking on {len(raw_documents)} document(s).")
+
+    try:
+        converter = DocumentConverter()
+        hf_tokenizer = HuggingFaceTokenizer(
+            tokenizer=AutoTokenizer.from_pretrained("sentence-transformers/all-MiniLM-L6-v2")
+        )
+        chunker = HybridChunker(tokenizer=hf_tokenizer, merge_peers=True)
+
+        processed_chunks = []
+
+        for doc in raw_documents:
+            source_path = doc.metadata.get("source")
+            if not source_path:
+                raise ValueError("Document is missing 'source' metadata.")
+
+            # Try to resolve file path from relative name (e.g., "Test%2BACME%2BCorp.docx")
+            # decoded_name = unquote(os.path.basename(source_path))
+            full_path = os.path.join(PDF_STORAGE_PATH, source_path)
+
+            if not os.path.exists(full_path):
+                raise FileNotFoundError(f"Resolved file path does not exist: {full_path}")
+
+            dl_doc = converter.convert(source=full_path).document
+            chunks = list(chunker.chunk(dl_doc))
+
+            for c in chunks:
+                processed_chunks.append(
+                    LangchainDocument(
+                        page_content=c.text,
+                        metadata={**doc.metadata, "headings": c.meta.headings, "in_memory": false},
+                    )
+                )
+
+        logger.info(f"Docling hybrid chunking complete: {len(processed_chunks)} chunks created.")
+        return processed_chunks
+
+    except Exception as e:
+        logger.exception(f"An error occurred during hybrid chunking using Docling. Details: {e}")
+        st.error("An error occurred during hybrid chunking using Docling. Check logs for details.")
+        return []
 
 def index_documents(document_chunks):
-    """
-    Add document chunks to the in-memory vector store.
-    Note: This function modifies st.session_state directly.
-    """
     if not document_chunks:
         logger.warning("index_documents called with no chunks to index.")
-        st.warning(
-            "No document chunks available to index. This may happen if the document was empty or text extraction failed."
-        )  # User feedback fine
+        st.warning("No document chunks available to index.")
         return
     logger.info(f"Indexing {len(document_chunks)} document chunks.")
     try:
