@@ -12,9 +12,12 @@ FINAL_TOP_N_FOR_CONTEXT = 15  # Number of docs reranker should return for LLM co
 
 # Prompt Templates
 PROMPT_TEMPLATE = """
-You are an expert research assistant. Use the provided document context and conversation history to answer the current query.
+You are an expert research assistant. Use the provided document context, conversation history, and persistent memory to answer the current query.
 If the query is a follow-up question, use the conversation history to understand the context.
 If unsure, state that you don't know. Be concise and factual (max 3 sentences).
+
+Persistent Memory (if any):
+{persistent_memory}
 
 Conversation History (if any):
 {conversation_history}
@@ -57,6 +60,7 @@ RERANKER_MODEL_NAME = os.getenv(
 
 # Paths and URLs
 PDF_STORAGE_PATH = os.getenv("PDF_STORAGE_PATH", "document_store/pdfs/")
+MEMORY_FILE_PATH = os.getenv("MEMORY_FILE_PATH", "document_store/memory/context.json")
 # Fetch Ollama base URL from environment variable, with a default
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
 

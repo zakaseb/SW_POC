@@ -2,8 +2,34 @@ import streamlit as st
 from langchain_core.vectorstores import InMemoryVectorStore
 from .model_loader import get_embedding_model
 from .logger_config import get_logger
+import os
+import json
+from .config import MEMORY_FILE_PATH
 
 logger = get_logger(__name__)
+
+
+def load_persistent_memory():
+    """Loads the persistent memory from the file into the session state."""
+    if os.path.exists(MEMORY_FILE_PATH):
+        with open(MEMORY_FILE_PATH, "r") as f:
+            st.session_state.memory = json.load(f)
+    else:
+        st.session_state.memory = []
+
+
+def save_persistent_memory():
+    """Saves the session state's memory to the file."""
+    os.makedirs(os.path.dirname(MEMORY_FILE_PATH), exist_ok=True)
+    with open(MEMORY_FILE_PATH, "w") as f:
+        json.dump(st.session_state.memory, f)
+
+
+def purge_persistent_memory():
+    """Purges the persistent memory file."""
+    if os.path.exists(MEMORY_FILE_PATH):
+        os.remove(MEMORY_FILE_PATH)
+    st.session_state.memory = []
 
 
 def initialize_session_state():
@@ -14,6 +40,8 @@ def initialize_session_state():
         st.session_state.DOCUMENT_VECTOR_DB = InMemoryVectorStore(get_embedding_model())
     if "messages" not in st.session_state:
         st.session_state.messages = []
+    if "memory" not in st.session_state:
+        load_persistent_memory()
     if "document_processed" not in st.session_state:
         st.session_state.document_processed = False
     if "uploaded_file_key" not in st.session_state:

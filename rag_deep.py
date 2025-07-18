@@ -40,6 +40,8 @@ from core.session_manager import (
     initialize_session_state,
     reset_document_states,
     reset_file_uploader,
+    purge_persistent_memory,
+    save_persistent_memory,
 )
 
 # ---------------------------------
@@ -126,6 +128,11 @@ with st.sidebar:
     if st.button("Clear Chat History", key="clear_chat"):
         st.session_state.messages = []
         logger.info("Chat history cleared by user.")
+
+    if st.button("Purge Memory", key="purge_memory"):
+        purge_persistent_memory()
+        logger.info("Persistent memory purged by user.")
+        st.success("Persistent memory has been purged.")
 
     if st.button("Reset All Documents & Chat", key="reset_doc_chat_button"):
         logger.info("Resetting all documents and chat.")
@@ -371,6 +378,7 @@ if st.session_state.document_processed:
                 st.write(user_input)
 
             with st.spinner("Thinking..."):
+                st.session_state.memory.append({"role": "user", "content": user_input})
                 num_messages_to_take = MAX_HISTORY_TURNS * 2
                 chat_log_for_prompt = st.session_state.messages[:-1]
                 chat_log_for_prompt = chat_log_for_prompt[-num_messages_to_take:]
@@ -434,11 +442,15 @@ if st.session_state.document_processed:
                         ai_response = "After re-ranking, no relevant sections were found in the loaded documents to answer your query."
                     else:
                         logger.debug("Generating answer with final context documents.")
+                        persistent_memory_str = "\n".join(
+                            [f"{msg['role']}: {msg['content']}" for msg in st.session_state.memory]
+                        )
                         ai_response = generate_answer(
                             LANGUAGE_MODEL,
                             user_query=user_input,
                             context_documents=final_context_docs,
                             conversation_history=formatted_history,
+                            persistent_memory=persistent_memory_str,
                         )
                 else:
                     logger.warning("No relevant sections found from hybrid search.")
@@ -450,6 +462,8 @@ if st.session_state.document_processed:
             st.session_state.messages.append(
                 {"role": "assistant", "content": ai_response, "avatar": "🤖"}
             )
+            st.session_state.memory.append({"role": "assistant", "content": ai_response})
+            save_persistent_memory()
             with st.chat_message("assistant", avatar="🤖"):
                 st.write(ai_response)
 else:
