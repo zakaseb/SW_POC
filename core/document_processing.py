@@ -19,8 +19,10 @@ from urllib.parse import unquote
 
 logger = get_logger(__name__)
 
-def save_uploaded_file(uploaded_file):
-    file_path = os.path.join(PDF_STORAGE_PATH, uploaded_file.name)
+def save_uploaded_file(uploaded_file, storage_path=PDF_STORAGE_PATH):
+    # Create the storage directory if it doesn't exist
+    os.makedirs(storage_path, exist_ok=True)
+    file_path = os.path.join(storage_path, uploaded_file.name)
     try:
         with open(file_path, "wb") as file:
             file.write(uploaded_file.getbuffer())
@@ -170,14 +172,16 @@ def chunk_documents(raw_documents):
         st.error("An error occurred during hybrid chunking using Docling. Check logs for details.")
         return []
 
-def index_documents(document_chunks):
+def index_documents(document_chunks, vector_db=None):
     if not document_chunks:
         logger.warning("index_documents called with no chunks to index.")
         st.warning("No document chunks available to index.")
         return
     logger.info(f"Indexing {len(document_chunks)} document chunks.")
     try:
-        st.session_state.DOCUMENT_VECTOR_DB.add_documents(document_chunks)
+        if vector_db is None:
+            vector_db = st.session_state.DOCUMENT_VECTOR_DB
+        vector_db.add_documents(document_chunks)
         st.session_state.document_processed = True
         logger.info("Document chunks indexed successfully into vector store.")
     except Exception as e:

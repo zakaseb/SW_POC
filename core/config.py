@@ -60,6 +60,9 @@ RERANKER_MODEL_NAME = os.getenv(
 
 # Paths and URLs
 PDF_STORAGE_PATH = os.getenv("PDF_STORAGE_PATH", "document_store/pdfs/")
+CONTEXT_PDF_STORAGE_PATH = os.getenv(
+    "CONTEXT_PDF_STORAGE_PATH", "document_store/context_pdfs/"
+)
 MEMORY_FILE_PATH = os.getenv("MEMORY_FILE_PATH", "document_store/memory/context.json")
 # Fetch Ollama base URL from environment variable, with a default
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")

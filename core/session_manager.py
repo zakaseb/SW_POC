@@ -36,6 +36,8 @@ def initialize_session_state():
     """
     Initializes the session state variables if they don't exist.
     """
+    if "CONTEXT_VECTOR_DB" not in st.session_state:
+        st.session_state.CONTEXT_VECTOR_DB = InMemoryVectorStore(get_embedding_model())
     if "DOCUMENT_VECTOR_DB" not in st.session_state:
         st.session_state.DOCUMENT_VECTOR_DB = InMemoryVectorStore(get_embedding_model())
     if "messages" not in st.session_state:
@@ -44,6 +46,7 @@ def initialize_session_state():
         load_persistent_memory()
     if "document_processed" not in st.session_state:
         st.session_state.document_processed = False
+    load_context_document()
     if "uploaded_file_key" not in st.session_state:
         st.session_state.uploaded_file_key = 0
     if "uploaded_filenames" not in st.session_state:
@@ -58,6 +61,38 @@ def initialize_session_state():
         st.session_state.bm25_index = None
     if "bm25_corpus_chunks" not in st.session_state:
         st.session_state.bm25_corpus_chunks = []
+
+
+def load_context_document():
+    """Loads the context document at startup."""
+    from .document_processing import load_document, chunk_documents, index_documents
+    from .config import CONTEXT_PDF_STORAGE_PATH
+
+    if "context_document_loaded" not in st.session_state:
+        st.session_state.context_document_loaded = False
+
+    if not st.session_state.context_document_loaded:
+        if os.path.exists(CONTEXT_PDF_STORAGE_PATH):
+            for filename in os.listdir(CONTEXT_PDF_STORAGE_PATH):
+                file_path = os.path.join(CONTEXT_PDF_STORAGE_PATH, filename)
+                if os.path.isfile(file_path):
+                    raw_docs = load_document(file_path)
+                    if raw_docs:
+                        chunks = chunk_documents(raw_docs)
+                        if chunks:
+                            index_documents(
+                                chunks, vector_db=st.session_state.CONTEXT_VECTOR_DB
+                            )
+                            st.session_state.context_document_loaded = True
+                            logger.info(f"Context document '{filename}' loaded and indexed.")
+                        else:
+                            logger.warning(
+                                f"No chunks generated from context document '{filename}'."
+                            )
+                    else:
+                        logger.warning(
+                            f"Could not load context document '{filename}'."
+                        )
 
 
 def reset_document_states(clear_chat=True):

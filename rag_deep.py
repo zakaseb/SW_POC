@@ -15,9 +15,10 @@ from core.config import (
     # K_SEMANTIC, # Removed as it's used in core.search_pipeline
     # K_BM25, # Removed as it's used in core.search_pipeline
     # K_RRF_PARAM, # Removed as it's used in core.search_pipeline
-    TOP_K_FOR_RERANKER, # Still used directly in rag_deep.py for slicing
-    FINAL_TOP_N_FOR_CONTEXT, # Still used directly in rag_deep.py for rerank_documents call
+    TOP_K_FOR_RERANKER,  # Still used directly in rag_deep.py for slicing
+    FINAL_TOP_N_FOR_CONTEXT,  # Still used directly in rag_deep.py for rerank_documents call
     PDF_STORAGE_PATH,
+    CONTEXT_PDF_STORAGE_PATH,
 )
 from core.model_loader import (
     get_embedding_model,
@@ -125,6 +126,35 @@ logger.info(f"Ensured PDF storage directory exists: {PDF_STORAGE_PATH}")
 
 with st.sidebar:
     st.header("Controls")
+
+    st.header("Context Document")
+    context_uploaded_file = st.file_uploader(
+        "Upload Context Document (PDF, DOCX, TXT)",
+        type=["pdf", "docx", "txt"],
+        key="context_file_uploader",
+    )
+    if context_uploaded_file is not None:
+        # Save the context document to the designated folder
+        saved_path = save_uploaded_file(
+            context_uploaded_file, CONTEXT_PDF_STORAGE_PATH
+        )
+        if saved_path:
+            # Process and index the context document
+            raw_docs = load_document(saved_path)
+            if raw_docs:
+                chunks = chunk_documents(raw_docs)
+                if chunks:
+                    index_documents(
+                        chunks, vector_db=st.session_state.CONTEXT_VECTOR_DB
+                    )
+                    st.success("Context document successfully uploaded!")
+                else:
+                    st.error("Failed to generate chunks from the context document.")
+            else:
+                st.error("Failed to load the context document.")
+        else:
+            st.error("Failed to save the context document.")
+
     if st.button("Clear Chat History", key="clear_chat"):
         st.session_state.messages = []
         logger.info("Chat history cleared by user.")
@@ -227,6 +257,9 @@ st.title("📘 DocuMind-AI")
 st.markdown("### Your Intelligent Document Assistant")
 st.markdown("---")
 
+if st.session_state.get("context_document_loaded"):
+    st.info("A context document is loaded and will be used in the session.")
+
 uploaded_files = st.file_uploader(
     "Upload Research Documents (PDF, DOCX, TXT)",
     type=["pdf", "docx", "txt"],
@@ -253,7 +286,7 @@ if uploaded_files:
             filename = uploaded_file_obj.name
             logger.debug(f"Processing uploaded file: {filename}")
             with st.spinner(f"Processing '{filename}'... This may take a moment."):
-                saved_path = save_uploaded_file(uploaded_file_obj)
+                saved_path = save_uploaded_file(uploaded_file_obj, PDF_STORAGE_PATH)
                 if saved_path:
                     logger.info(f"File '{filename}' saved to '{saved_path}'")
                     raw_docs_from_file = load_document(saved_path)
@@ -392,6 +425,7 @@ if st.session_state.document_processed:
                 retrieved_results_dict = find_related_documents(
                     user_input,
                     st.session_state.DOCUMENT_VECTOR_DB,
+                    st.session_state.CONTEXT_VECTOR_DB,
                     st.session_state.bm25_index,
                     st.session_state.bm25_corpus_chunks,
                     st.session_state.document_processed,
