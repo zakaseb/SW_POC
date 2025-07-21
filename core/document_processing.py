@@ -124,7 +124,7 @@ def load_document(file_path):
         st.error(f"{user_message} Check logs for details.")
         return []
 
-def chunk_documents(raw_documents):
+def chunk_documents(raw_documents, storage_path=PDF_STORAGE_PATH):
     if not raw_documents:
         logger.warning("chunk_documents called with no raw documents.")
         st.warning("No content found in the document to chunk.")
@@ -148,7 +148,7 @@ def chunk_documents(raw_documents):
 
             # Try to resolve file path from relative name (e.g., "Test%2BACME%2BCorp.docx")
             # decoded_name = unquote(os.path.basename(source_path))
-            full_path = os.path.join(PDF_STORAGE_PATH, source_path)
+            full_path = os.path.join(storage_path, source_path)
 
             if not os.path.exists(full_path):
                 raise FileNotFoundError(f"Resolved file path does not exist: {full_path}")

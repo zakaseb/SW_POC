@@ -142,7 +142,7 @@ with st.sidebar:
             # Process and index the context document
             raw_docs = load_document(saved_path)
             if raw_docs:
-                chunks = chunk_documents(raw_docs)
+                chunks = chunk_documents(raw_docs, CONTEXT_PDF_STORAGE_PATH)
                 if chunks:
                     index_documents(
                         chunks, vector_db=st.session_state.CONTEXT_VECTOR_DB
@@ -315,7 +315,9 @@ if uploaded_files:
                 f"Chunking and indexing {len(st.session_state.uploaded_filenames)} document(s)..."
             ):
                 logger.debug("Starting document chunking.")
-                processed_chunks = chunk_documents(st.session_state.raw_documents)
+                processed_chunks = chunk_documents(
+                    st.session_state.raw_documents, PDF_STORAGE_PATH
+                )
                 if processed_chunks:
                     logger.info(f"{len(processed_chunks)} chunks created.")
                     logger.debug("Starting document indexing.")
