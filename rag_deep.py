@@ -315,9 +315,7 @@ if uploaded_files:
                 f"Chunking and indexing {len(st.session_state.uploaded_filenames)} document(s)..."
             ):
                 logger.debug("Starting document chunking.")
-                processed_chunks = chunk_documents(
-                    st.session_state.raw_documents, PDF_STORAGE_PATH
-                )
+                processed_chunks = chunk_documents(st.session_state.raw_documents)
                 if processed_chunks:
                     logger.info(f"{len(processed_chunks)} chunks created.")
                     logger.debug("Starting document indexing.")

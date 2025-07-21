@@ -130,29 +130,6 @@ def chunk_documents(raw_documents, storage_path=PDF_STORAGE_PATH):
         st.warning("No content found in the document to chunk.")
         return []
 
-    processed_chunks = []
-    for doc in raw_documents:
-        source_path = doc.metadata.get("source")
-        if not source_path:
-            raise ValueError("Document is missing 'source' metadata.")
-
-        chunk_file_path = os.path.splitext(os.path.join(storage_path, source_path))[0] + "_chunks.json"
-        if os.path.exists(chunk_file_path):
-            try:
-                with open(chunk_file_path, "r") as chunk_file:
-                    import json
-                    chunks_data = json.load(chunk_file)
-                    processed_chunks.extend([LangchainDocument(**data) for data in chunks_data])
-                    logger.info(f"Loaded chunks for '{source_path}' from cache.")
-                    continue
-            except (IOError, json.JSONDecodeError) as e:
-                logger.error(f"Error loading chunks from '{chunk_file_path}': {e}")
-                # Fall back to processing the original document
-                pass
-
-    if processed_chunks:
-        return processed_chunks
-
     logger.info(f"Starting Docling hybrid chunking on {len(raw_documents)} document(s).")
 
     try:
@@ -162,11 +139,15 @@ def chunk_documents(raw_documents, storage_path=PDF_STORAGE_PATH):
         )
         chunker = HybridChunker(tokenizer=hf_tokenizer, merge_peers=True)
 
+        processed_chunks = []
+
         for doc in raw_documents:
             source_path = doc.metadata.get("source")
             if not source_path:
                 raise ValueError("Document is missing 'source' metadata.")
 
+            # Try to resolve file path from relative name (e.g., "Test%2BACME%2BCorp.docx")
+            # decoded_name = unquote(os.path.basename(source_path))
             full_path = os.path.join(storage_path, source_path)
 
             if not os.path.exists(full_path):
@@ -174,11 +155,6 @@ def chunk_documents(raw_documents, storage_path=PDF_STORAGE_PATH):
 
             dl_doc = converter.convert(source=full_path).document
             chunks = list(chunker.chunk(dl_doc))
-
-            chunk_file_path = os.path.splitext(full_path)[0] + "_chunks.json"
-            with open(chunk_file_path, "w") as chunk_file:
-                import json
-                json.dump([c.dict() for c in chunks], chunk_file)
 
             for c in chunks:
                 processed_chunks.append(
