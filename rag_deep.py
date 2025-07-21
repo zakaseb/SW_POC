@@ -142,10 +142,14 @@ with st.sidebar:
             # Process and index the context document
             raw_docs = load_document(saved_path)
             if raw_docs:
-                index_documents(
-                    raw_docs, vector_db=st.session_state.CONTEXT_VECTOR_DB
-                )
-                st.success("Context document successfully uploaded!")
+                chunks = chunk_documents(raw_docs, CONTEXT_PDF_STORAGE_PATH)
+                if chunks:
+                    index_documents(
+                        chunks, vector_db=st.session_state.CONTEXT_VECTOR_DB
+                    )
+                    st.success("Context document successfully uploaded!")
+                else:
+                    st.error("Failed to generate chunks from the context document.")
             else:
                 st.error("Failed to load the context document.")
         else:
@@ -308,51 +312,64 @@ if uploaded_files:
             )
 
             with st.spinner(
-                f"Indexing {len(st.session_state.uploaded_filenames)} document(s)..."
+                f"Chunking and indexing {len(st.session_state.uploaded_filenames)} document(s)..."
             ):
-                logger.debug("Starting document indexing.")
-                index_documents(st.session_state.raw_documents)  # Modifies st.session_state
+                logger.debug("Starting document chunking.")
+                processed_chunks = chunk_documents(
+                    st.session_state.raw_documents, PDF_STORAGE_PATH
+                )
+                if processed_chunks:
+                    logger.info(f"{len(processed_chunks)} chunks created.")
+                    logger.debug("Starting document indexing.")
+                    index_documents(processed_chunks)  # Modifies st.session_state
 
-                if st.session_state.document_processed:
-                    logger.info("Vector indexing successful.")
-                    try:
-                        logger.debug("Starting BM25 indexing.")
-                        corpus_texts = [
-                            chunk.page_content for chunk in st.session_state.raw_documents
-                        ]
-                        tokenized_corpus = [
-                            doc.lower().split(" ") for doc in corpus_texts
-                        ]
-                        st.session_state.bm25_index = BM25Okapi(tokenized_corpus)
-                        st.session_state.bm25_corpus_chunks = st.session_state.raw_documents
+                    if st.session_state.document_processed:
+                        logger.info("Vector indexing successful.")
+                        try:
+                            logger.debug("Starting BM25 indexing.")
+                            corpus_texts = [
+                                chunk.page_content for chunk in processed_chunks
+                            ]
+                            tokenized_corpus = [
+                                doc.lower().split(" ") for doc in corpus_texts
+                            ]
+                            st.session_state.bm25_index = BM25Okapi(tokenized_corpus)
+                            st.session_state.bm25_corpus_chunks = processed_chunks
+                            display_filenames = ", ".join(
+                                st.session_state.uploaded_filenames
+                            )
+                            logger.info(
+                                f"BM25 index created for documents: {display_filenames}"
+                            )
+                            st.success(
+                                f"✅ Documents ({display_filenames}) processed and indexed successfully!"
+                            )
+                        except Exception as e:
+                            display_filenames = ", ".join(
+                                st.session_state.uploaded_filenames
+                            )
+                            logger.exception(
+                                f"Failed to create BM25 index for documents ({display_filenames})."
+                            )
+                            st.error(
+                                f"Failed to create BM25 index for documents ({display_filenames}). Vector indexing may still be active. Details: {e}"
+                            )
+                    else:
                         display_filenames = ", ".join(
                             st.session_state.uploaded_filenames
                         )
-                        logger.info(
-                            f"BM25 index created for documents: {display_filenames}"
-                        )
-                        st.success(
-                            f"✅ Documents ({display_filenames}) processed and indexed successfully!"
-                        )
-                    except Exception as e:
-                        display_filenames = ", ".join(
-                            st.session_state.uploaded_filenames
-                        )
-                        logger.exception(
-                            f"Failed to create BM25 index for documents ({display_filenames})."
+                        logger.error(
+                            f"Vector indexing failed for documents ({display_filenames}). BM25 indexing skipped."
                         )
                         st.error(
-                            f"Failed to create BM25 index for documents ({display_filenames}). Vector indexing may still be active. Details: {e}"
+                            f"Documents ({display_filenames}) loaded but failed during vector indexing. BM25 indexing also skipped."
                         )
                 else:
-                    display_filenames = ", ".join(
-                        st.session_state.uploaded_filenames
+                    logger.warning(
+                        "No processable chunks generated from documents. Indexing skipped."
                     )
-                    logger.error(
-                        f"Vector indexing failed for documents ({display_filenames}). BM25 indexing skipped."
-                    )
-                    st.error(
-                        f"Documents ({display_filenames}) loaded but failed during vector indexing. BM25 indexing also skipped."
+                    st.warning(
+                        "No processable content found after loading all uploaded documents. Indexing skipped."
                     )
         elif not st.session_state.uploaded_filenames and uploaded_files:
             logger.warning(

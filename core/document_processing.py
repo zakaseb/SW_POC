@@ -27,18 +27,6 @@ def save_uploaded_file(uploaded_file, storage_path=PDF_STORAGE_PATH):
         with open(file_path, "wb") as file:
             file.write(uploaded_file.getbuffer())
         logger.info(f"File '{uploaded_file.name}' saved to '{file_path}'.")
-
-        # Now, chunk the document and save the chunks
-        raw_docs = load_document(file_path)
-        if raw_docs:
-            chunks = chunk_documents(raw_docs, storage_path)
-            if chunks:
-                chunk_file_path = os.path.splitext(file_path)[0] + "_chunks.json"
-                with open(chunk_file_path, "w") as chunk_file:
-                    import json
-                    json.dump([chunk.dict() for chunk in chunks], chunk_file)
-                logger.info(f"Chunks for '{uploaded_file.name}' saved to '{chunk_file_path}'.")
-
         return file_path
     except IOError as e:
         user_message = f"Failed to save uploaded file '{uploaded_file.name}'. An I/O error occurred: {e.strerror}."
@@ -52,18 +40,6 @@ def save_uploaded_file(uploaded_file, storage_path=PDF_STORAGE_PATH):
         return None
 
 def load_document(file_path):
-    chunk_file_path = os.path.splitext(file_path)[0] + "_chunks.json"
-    if os.path.exists(chunk_file_path):
-        try:
-            with open(chunk_file_path, "r") as chunk_file:
-                import json
-                chunks_data = json.load(chunk_file)
-                return [LangchainDocument(**data) for data in chunks_data]
-        except (IOError, json.JSONDecodeError) as e:
-            logger.error(f"Error loading chunks from '{chunk_file_path}': {e}")
-            # Fall back to processing the original document
-            pass
-
     file_extension = os.path.splitext(file_path)[1].lower()
     file_name = os.path.basename(file_path)
 
@@ -154,6 +130,29 @@ def chunk_documents(raw_documents, storage_path=PDF_STORAGE_PATH):
         st.warning("No content found in the document to chunk.")
         return []
 
+    processed_chunks = []
+    for doc in raw_documents:
+        source_path = doc.metadata.get("source")
+        if not source_path:
+            raise ValueError("Document is missing 'source' metadata.")
+
+        chunk_file_path = os.path.splitext(os.path.join(storage_path, source_path))[0] + "_chunks.json"
+        if os.path.exists(chunk_file_path):
+            try:
+                with open(chunk_file_path, "r") as chunk_file:
+                    import json
+                    chunks_data = json.load(chunk_file)
+                    processed_chunks.extend([LangchainDocument(**data) for data in chunks_data])
+                    logger.info(f"Loaded chunks for '{source_path}' from cache.")
+                    continue
+            except (IOError, json.JSONDecodeError) as e:
+                logger.error(f"Error loading chunks from '{chunk_file_path}': {e}")
+                # Fall back to processing the original document
+                pass
+
+    if processed_chunks:
+        return processed_chunks
+
     logger.info(f"Starting Docling hybrid chunking on {len(raw_documents)} document(s).")
 
     try:
@@ -163,15 +162,11 @@ def chunk_documents(raw_documents, storage_path=PDF_STORAGE_PATH):
         )
         chunker = HybridChunker(tokenizer=hf_tokenizer, merge_peers=True)
 
-        processed_chunks = []
-
         for doc in raw_documents:
             source_path = doc.metadata.get("source")
             if not source_path:
                 raise ValueError("Document is missing 'source' metadata.")
 
-            # Try to resolve file path from relative name (e.g., "Test%2BACME%2BCorp.docx")
-            # decoded_name = unquote(os.path.basename(source_path))
             full_path = os.path.join(storage_path, source_path)
 
             if not os.path.exists(full_path):
@@ -179,6 +174,11 @@ def chunk_documents(raw_documents, storage_path=PDF_STORAGE_PATH):
 
             dl_doc = converter.convert(source=full_path).document
             chunks = list(chunker.chunk(dl_doc))
+
+            chunk_file_path = os.path.splitext(full_path)[0] + "_chunks.json"
+            with open(chunk_file_path, "w") as chunk_file:
+                import json
+                json.dump([c.dict() for c in chunks], chunk_file)
 
             for c in chunks:
                 processed_chunks.append(
