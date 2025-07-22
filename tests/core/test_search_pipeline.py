@@ -69,8 +69,8 @@ def test_find_related_documents_empty_query(
     mock_vector_db, mock_bm25_index, mock_logger_fixture
 ):
     with patch(STREAMLIT_WARNING_PATH) as mock_st_warning:
-        results = find_related_documents("", mock_vector_db, mock_bm25_index, [], True)
-    assert results == {"semantic_results": [], "bm25_results": []}
+        results = find_related_documents("", mock_vector_db, None, mock_bm25_index, [], True)
+    assert results == {"semantic_results": [], "bm25_results": [], "context_results": []}
     mock_st_warning.assert_called_once_with(
         "Search query is empty. Please enter a query to find related documents."
     )
@@ -84,9 +84,9 @@ def test_find_related_documents_document_not_processed(
 ):
     with patch(STREAMLIT_WARNING_PATH) as mock_st_warning:
         results = find_related_documents(
-            "query", mock_vector_db, mock_bm25_index, [], False
+            "query", mock_vector_db, None, mock_bm25_index, [], False
         )
-    assert results == {"semantic_results": [], "bm25_results": []}
+    assert results == {"semantic_results": [], "bm25_results": [], "context_results": []}
     mock_st_warning.assert_called_once_with(
         "No document has been processed yet. Please upload and process a document before searching."
     )
@@ -109,12 +109,12 @@ def test_find_related_documents_success_both_searches(
     with patch('core.search_pipeline.K_SEMANTIC', 1), \
          patch('core.search_pipeline.K_BM25', 1):
         results = find_related_documents(
-            "query", mock_vector_db, mock_bm25_index, bm25_corpus_chunks, True
+            "query", mock_vector_db, None, mock_bm25_index, bm25_corpus_chunks, True
         )
 
     mock_vector_db.similarity_search.assert_called_once_with("query", k=1) # This should now use the patched k=1
     mock_bm25_index.get_scores.assert_called_once_with(
-        ["query"]
+        "query".lower().split(" ")
     )
     assert results["semantic_results"] == semantic_result
     assert results["bm25_results"] == [bm25_result_doc]
@@ -131,7 +131,7 @@ def test_find_related_documents_only_semantic(
     mock_vector_db.similarity_search.return_value = [semantic_doc1]
 
     # BM25 not available (bm25_index is None)
-    results = find_related_documents("test query", mock_vector_db, None, [], True)
+    results = find_related_documents("test query", mock_vector_db, None, None, [], True)
     assert len(results["semantic_results"]) == 1
     assert results["semantic_results"][0].page_content == "semantic only"
     assert len(results["bm25_results"]) == 0
@@ -150,7 +150,7 @@ def test_find_related_documents_only_bm25(
     bm25_corpus_chunks = [bm25_doc1]
 
     results = find_related_documents(
-        "test query", mock_vector_db, mock_bm25_index, bm25_corpus_chunks, True
+        "test query", mock_vector_db, None, mock_bm25_index, bm25_corpus_chunks, True
     )
     assert len(results["semantic_results"]) == 0
     assert len(results["bm25_results"]) == 1
@@ -167,6 +167,7 @@ def test_find_related_documents_no_results(
     results = find_related_documents(
         "query for no results",
         mock_vector_db,
+        None,
         mock_bm25_index,
         bm25_corpus_chunks,
         True,
@@ -181,7 +182,7 @@ def test_find_related_documents_semantic_error(
     mock_vector_db.similarity_search.side_effect = Exception("Semantic DB error")
     with patch(STREAMLIT_ERROR_PATH) as mock_st_error:
         results = find_related_documents(
-            "query", mock_vector_db, mock_bm25_index, [], True
+            "query", mock_vector_db, None, mock_bm25_index, [], True
         )
     assert results["semantic_results"] == []
     mock_st_error.assert_called_once()
@@ -195,7 +196,7 @@ def test_find_related_documents_bm25_error(
     bm25_corpus_chunks = [MagicMock()]
     with patch(STREAMLIT_ERROR_PATH) as mock_st_error:
         results = find_related_documents(
-            "query", mock_vector_db, mock_bm25_index, bm25_corpus_chunks, True
+            "query", mock_vector_db, None, mock_bm25_index, bm25_corpus_chunks, True
         )
     assert results["bm25_results"] == []
     mock_st_error.assert_called_once()

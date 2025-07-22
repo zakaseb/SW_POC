@@ -28,7 +28,9 @@ def mock_logger_fixture():
 
 @patch(GET_EMBEDDING_MODEL_PATH)
 @patch(IN_MEMORY_VECTOR_STORE_PATH)
+@patch("core.session_manager.load_context_document")
 def test_initialize_session_state_initial_call(
+    mock_load_context,
     mock_vector_store_class,
     mock_get_embedding,
     mock_embedding_instance,
@@ -53,7 +55,9 @@ def test_initialize_session_state_initial_call(
 
         # Check attributes are set
         assert mock_session_state.DOCUMENT_VECTOR_DB == mock_vs_instance
-        mock_vector_store_class.assert_called_once_with(mock_embedding_instance)
+        assert mock_session_state.CONTEXT_VECTOR_DB == mock_vs_instance
+        assert mock_vector_store_class.call_count == 2
+        mock_vector_store_class.assert_any_call(mock_embedding_instance)
 
         assert mock_session_state.messages == []
         assert mock_session_state.document_processed is False

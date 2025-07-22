@@ -146,12 +146,16 @@ def chunk_documents(raw_documents, storage_path=PDF_STORAGE_PATH):
             if not source_path:
                 raise ValueError("Document is missing 'source' metadata.")
 
-            # Try to resolve file path from relative name (e.g., "Test%2BACME%2BCorp.docx")
-            # decoded_name = unquote(os.path.basename(source_path))
-            full_path = os.path.join(storage_path, source_path)
-
+            # The 'source' metadata should already contain the full path to the file.
+            # We no longer need to join it with storage_path.
+            full_path = source_path
             if not os.path.exists(full_path):
-                raise FileNotFoundError(f"Resolved file path does not exist: {full_path}")
+                # If the path does not exist, attempt to resolve it using the provided storage_path as a fallback.
+                # This handles cases where a relative path might have been passed in the metadata.
+                logger.warning(f"Source path '{full_path}' not found. Attempting to resolve with storage path '{storage_path}'.")
+                full_path = os.path.join(storage_path, os.path.basename(source_path))
+                if not os.path.exists(full_path):
+                    raise FileNotFoundError(f"Resolved file path does not exist: {full_path}")
 
             dl_doc = converter.convert(source=full_path).document
             chunks = list(chunker.chunk(dl_doc))

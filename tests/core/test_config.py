@@ -46,7 +46,7 @@ def test_ollama_embedding_model_name_default():
         if "OLLAMA_EMBEDDING_MODEL_NAME" in os.environ:
             del os.environ["OLLAMA_EMBEDDING_MODEL_NAME"]
         importlib.reload(config)
-        assert config.OLLAMA_EMBEDDING_MODEL_NAME == "llama3.1:70b"
+        assert config.OLLAMA_EMBEDDING_MODEL_NAME == "llama3.3:latest"
 
 
 def test_ollama_embedding_model_name_env_override():
@@ -61,7 +61,7 @@ def test_ollama_llm_name_default():
         if "OLLAMA_LLM_NAME" in os.environ:
             del os.environ["OLLAMA_LLM_NAME"]
         importlib.reload(config)
-        assert config.OLLAMA_LLM_NAME == "llama3.1:70b"
+        assert config.OLLAMA_LLM_NAME == "llama3.3:latest"
 
 
 def test_ollama_llm_name_env_override():
@@ -113,12 +113,12 @@ def test_max_history_turns_value():
 
 def test_k_semantic_value():
     importlib.reload(config)
-    assert config.K_SEMANTIC == 5
+    assert config.K_SEMANTIC == 20
 
 
 def test_k_bm25_value():
     importlib.reload(config)
-    assert config.K_BM25 == 5
+    assert config.K_BM25 == 20
 
 
 def test_k_rrf_param_value():
@@ -128,12 +128,12 @@ def test_k_rrf_param_value():
 
 def test_top_k_for_reranker_value():
     importlib.reload(config)
-    assert config.TOP_K_FOR_RERANKER == 10
+    assert config.TOP_K_FOR_RERANKER == 40
 
 
 def test_final_top_n_for_context_value():
     importlib.reload(config)
-    assert config.FINAL_TOP_N_FOR_CONTEXT == 3
+    assert config.FINAL_TOP_N_FOR_CONTEXT == 15
 
 
 def test_prompt_template_exists_and_type():

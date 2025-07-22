@@ -31,28 +31,19 @@ def setup_test_environment(tmp_path_factory):
         os.makedirs(TEST_DATA_DIR)
 
 @pytest.fixture
-def mock_streamlit_ui(mocker):
-    mock_session_dict = {
+def mock_streamlit_ui():
+    """Fixture to mock Streamlit UI components and session state."""
+
+    mock_session_state = {
         "document_processed": False, "messages": [], "uploaded_filenames": [],
-        "raw_documents": [], "DOCUMENT_VECTOR_DB": MagicMock(), "uploaded_file_key": 0,
+        "raw_documents": [], "DOCUMENT_VECTOR_DB": MagicMock(), "CONTEXT_VECTOR_DB": MagicMock(), "uploaded_file_key": 0,
         "document_summary": None, "document_keywords": None, "bm25_index": None,
         "bm25_corpus_chunks": []
     }
-    mocker.patch('rag_deep.st.session_state', mock_session_dict, create=True) # Use create=True if st.session_state might not exist
-    mocker.patch('rag_deep.st.button', return_value=False)
-    mocker.patch('rag_deep.st.file_uploader', return_value=None)
-    mocker.patch('rag_deep.st.chat_input', return_value=None)
-    m_spinner = MagicMock(); m_spinner.__enter__ = MagicMock(return_value=None); m_spinner.__exit__ = MagicMock(return_value=None)
-    mocker.patch('rag_deep.st.spinner', return_value=m_spinner)
-    mocker.patch('rag_deep.st.error')
-    mocker.patch('rag_deep.st.warning')
-    mocker.patch('rag_deep.st.info')
-    mocker.patch('rag_deep.st.success')
-    mocker.patch('rag_deep.st.markdown')
-    mocker.patch('rag_deep.st.sidebar', MagicMock())
-    mocker.patch('rag_deep.st.header'); mocker.patch('rag_deep.st.title'); mocker.patch('rag_deep.st.write')
-    mocker.patch('rag_deep.st.chat_message', MagicMock())
-    return mock_session_dict
+
+    with patch('rag_deep.st') as mock_st:
+        mock_st.session_state = mock_session_state
+        yield mock_session_state
 
 
 @patch('rag_deep.index_documents')
@@ -131,6 +122,7 @@ def test_rag_deep_chat_logic_reranking_successful(
     retrieved_results_dict_val = find_related_documents( # This will call the mock_find_related_documents
         user_input_sim,
         mock_streamlit_ui["DOCUMENT_VECTOR_DB"],
+        mock_streamlit_ui["CONTEXT_VECTOR_DB"],
         mock_streamlit_ui["bm25_index"],
         mock_streamlit_ui["bm25_corpus_chunks"],
         mock_streamlit_ui["document_processed"]
@@ -184,31 +176,34 @@ def test_rag_deep_chat_logic_reranking_successful(
 @patch('rag_deep.RERANKER_MODEL', None) # Patch the global RERANKER_MODEL in rag_deep.py to be None
 @patch('rag_deep.LANGUAGE_MODEL', new_callable=MagicMock) # Still need to mock LANGUAGE_MODEL
 @patch('rag_deep.st.info')
+@patch('rag_deep.generate_answer')
+@patch('rag_deep.rerank_documents')
+@patch('rag_deep.combine_results_rrf')
+@patch('rag_deep.find_related_documents')
+@patch('rag_deep.RERANKER_MODEL', None)
+@patch('rag_deep.LANGUAGE_MODEL', new_callable=MagicMock)
 def test_rag_deep_chat_logic_reranker_model_none(
-    mock_st_info,
-    mock_language_model, # From @patch('rag_deep.LANGUAGE_MODEL')
-    mock_reranker_model_is_none, # From @patch('rag_deep.RERANKER_MODEL', None) - value is None
-    mock_find_related_documents,
-    mock_combine_results_rrf,
-    mock_rerank_documents,
-    mock_generate_answer,
-    mock_streamlit_ui
+    mock_lang_model, mock_reranker_is_none, mock_find_docs, mock_combine_docs,
+    mock_rerank_docs, mock_gen_answer, mock_st_info, mock_streamlit_ui
 ):
     mock_streamlit_ui["document_processed"] = True
     mock_streamlit_ui["messages"] = []
 
-    mock_find_related_documents.return_value = {"semantic_results": [LangchainDocument("sem1")], "bm25_results": [LangchainDocument("bm25_1")]}
+    mock_find_docs.return_value = {"semantic_results": [LangchainDocument("sem1")], "bm25_results": [LangchainDocument("bm25_1")]}
     hybrid_docs = [LangchainDocument(f"hybrid_doc_{i}") for i in range(core_config.TOP_K_FOR_RERANKER)]
-    mock_combine_results_rrf.return_value = hybrid_docs
-    mock_generate_answer.return_value = "Fallback AI Answer"
+    mock_combine_docs.return_value = hybrid_docs
+    mock_gen_answer.return_value = "Fallback AI Answer"
 
     user_input_sim = "test user query"
     mock_streamlit_ui["messages"].append({"role": "user", "content": user_input_sim})
 
     # --- Start of simulated block from rag_deep.py ---
     retrieved_results_dict_val = find_related_documents( # Calls mock_find_related_documents
-        user_input_sim, mock_streamlit_ui["DOCUMENT_VECTOR_DB"], mock_streamlit_ui["bm25_index"],
-        mock_streamlit_ui["bm25_corpus_chunks"], mock_streamlit_ui["document_processed"]
+        user_input_sim, mock_streamlit_ui["DOCUMENT_VECTOR_DB"],
+        mock_streamlit_ui["CONTEXT_VECTOR_DB"],
+        mock_streamlit_ui["bm25_index"],
+        mock_streamlit_ui["bm25_corpus_chunks"],
+        mock_streamlit_ui["document_processed"]
     )
     combined_hybrid_docs_val = combine_results_rrf(retrieved_results_dict_val) # Calls mock_combine_results_rrf
 
@@ -238,17 +233,17 @@ def test_rag_deep_chat_logic_reranker_model_none(
     mock_streamlit_ui["messages"].append({"role": "assistant", "content": ai_response})
     # --- End of simulated block ---
 
-    mock_find_related_documents.assert_called_once()
-    mock_combine_results_rrf.assert_called_once()
-    mock_rerank_documents.assert_not_called()
+    mock_find_docs.assert_called_once()
+    mock_combine_docs.assert_called_once()
+    mock_rerank_docs.assert_not_called()
 
     mock_st_info.assert_called_once_with(
         "Re-ranker model not loaded. Using documents from hybrid search directly (top results)."
     )
 
     expected_context_docs = hybrid_docs[:core_config.FINAL_TOP_N_FOR_CONTEXT]
-    mock_generate_answer.assert_called_once_with(
-        mock_language_model, # Assert it was called with the (mocked) LANGUAGE_MODEL global
+    mock_gen_answer.assert_called_once_with(
+        mock_lang_model, # Assert it was called with the (mocked) LANGUAGE_MODEL global
         user_query=user_input_sim,
         context_documents=expected_context_docs, conversation_history=""
     )

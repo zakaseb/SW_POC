@@ -134,26 +134,32 @@ with st.sidebar:
         key="context_file_uploader",
     )
     if context_uploaded_file is not None:
-        # Save the context document to the designated folder
-        saved_path = save_uploaded_file(
-            context_uploaded_file, CONTEXT_PDF_STORAGE_PATH
-        )
-        if saved_path:
-            # Process and index the context document
-            raw_docs = load_document(saved_path)
-            if raw_docs:
-                chunks = chunk_documents(raw_docs, CONTEXT_PDF_STORAGE_PATH)
-                if chunks:
-                    index_documents(
-                        chunks, vector_db=st.session_state.CONTEXT_VECTOR_DB
-                    )
-                    st.success("Context document successfully uploaded!")
+        context_file_info = {
+            "name": context_uploaded_file.name,
+            "size": context_uploaded_file.size,
+        }
+        if context_file_info != st.session_state.get("processed_context_file_info"):
+            # Save the context document to the designated folder
+            saved_path = save_uploaded_file(
+                context_uploaded_file, CONTEXT_PDF_STORAGE_PATH
+            )
+            if saved_path:
+                # Process and index the context document
+                raw_docs = load_document(saved_path)
+                if raw_docs:
+                    chunks = chunk_documents(raw_docs, CONTEXT_PDF_STORAGE_PATH)
+                    if chunks:
+                        index_documents(
+                            chunks, vector_db=st.session_state.CONTEXT_VECTOR_DB
+                        )
+                        st.session_state.processed_context_file_info = context_file_info
+                        st.success("Context document successfully uploaded!")
+                    else:
+                        st.error("Failed to generate chunks from the context document.")
                 else:
-                    st.error("Failed to generate chunks from the context document.")
+                    st.error("Failed to load the context document.")
             else:
-                st.error("Failed to load the context document.")
-        else:
-            st.error("Failed to save the context document.")
+                st.error("Failed to save the context document.")
 
     if st.button("Clear Chat History", key="clear_chat"):
         st.session_state.messages = []
@@ -269,22 +275,25 @@ uploaded_files = st.file_uploader(
 )
 
 if uploaded_files:
-    current_uploaded_file_names = sorted([f.name for f in uploaded_files])
-    logger.info(f"Files uploaded: {current_uploaded_file_names}")
+    current_uploaded_files_info = {f.name: f.size for f in uploaded_files}
+    logger.info(f"Files uploaded: {list(current_uploaded_files_info.keys())}")
 
-    if set(current_uploaded_file_names) != set(
-        st.session_state.get("uploaded_filenames", [])
-    ):
+    # Check if the uploaded files are the same as the ones already processed
+    if current_uploaded_files_info != st.session_state.get("processed_files_info", {}):
         logger.info("New set of files detected. Resetting document states and file uploader.")
         reset_document_states(clear_chat=True)
-        reset_file_uploader() # Added call to reset file uploader widget
+        # It's important to call reset_file_uploader to ensure the UI component updates
+        reset_file_uploader()
 
         all_raw_docs_for_session = []
         successfully_loaded_filenames = []
+        processed_files_info = {}
 
         for uploaded_file_obj in uploaded_files:
             filename = uploaded_file_obj.name
+            file_size = uploaded_file_obj.size
             logger.debug(f"Processing uploaded file: {filename}")
+
             with st.spinner(f"Processing '{filename}'... This may take a moment."):
                 saved_path = save_uploaded_file(uploaded_file_obj, PDF_STORAGE_PATH)
                 if saved_path:
@@ -293,27 +302,23 @@ if uploaded_files:
                     if raw_docs_from_file:
                         all_raw_docs_for_session.extend(raw_docs_from_file)
                         successfully_loaded_filenames.append(filename)
+                        processed_files_info[filename] = file_size
                         logger.info(f"Successfully loaded and parsed: {filename}")
                     else:
-                        st.error(
-                            f"Could not load document from '{filename}'. It might be empty, corrupted, or an unsupported type."
-                        )
+                        st.error(f"Could not load document from '{filename}'. It might be empty, corrupted, or an unsupported type.")
                         logger.error(f"Failed to load document from '{filename}'.")
                 else:
                     st.error(f"Failed to save '{filename}'. It will be skipped.")
                     logger.error(f"Failed to save '{filename}'.")
 
         st.session_state.uploaded_filenames = successfully_loaded_filenames
+        st.session_state.processed_files_info = processed_files_info
 
         if all_raw_docs_for_session:
             st.session_state.raw_documents = all_raw_docs_for_session
-            logger.info(
-                f"Total {len(all_raw_docs_for_session)} raw documents collected from {len(successfully_loaded_filenames)} files."
-            )
+            logger.info(f"Total {len(all_raw_docs_for_session)} raw documents collected from {len(successfully_loaded_filenames)} files.")
 
-            with st.spinner(
-                f"Chunking and indexing {len(st.session_state.uploaded_filenames)} document(s)..."
-            ):
+            with st.spinner(f"Chunking and indexing {len(st.session_state.uploaded_filenames)} document(s)..."):
                 logger.debug("Starting document chunking.")
                 processed_chunks = chunk_documents(st.session_state.raw_documents)
                 if processed_chunks:
@@ -325,57 +330,29 @@ if uploaded_files:
                         logger.info("Vector indexing successful.")
                         try:
                             logger.debug("Starting BM25 indexing.")
-                            corpus_texts = [
-                                chunk.page_content for chunk in processed_chunks
-                            ]
-                            tokenized_corpus = [
-                                doc.lower().split(" ") for doc in corpus_texts
-                            ]
+                            corpus_texts = [chunk.page_content for chunk in processed_chunks]
+                            tokenized_corpus = [doc.lower().split(" ") for doc in corpus_texts]
                             st.session_state.bm25_index = BM25Okapi(tokenized_corpus)
                             st.session_state.bm25_corpus_chunks = processed_chunks
-                            display_filenames = ", ".join(
-                                st.session_state.uploaded_filenames
-                            )
-                            logger.info(
-                                f"BM25 index created for documents: {display_filenames}"
-                            )
-                            st.success(
-                                f"✅ Documents ({display_filenames}) processed and indexed successfully!"
-                            )
+                            display_filenames = ", ".join(st.session_state.uploaded_filenames)
+                            logger.info(f"BM25 index created for documents: {display_filenames}")
+                            st.success(f"✅ Documents ({display_filenames}) processed and indexed successfully!")
                         except Exception as e:
-                            display_filenames = ", ".join(
-                                st.session_state.uploaded_filenames
-                            )
-                            logger.exception(
-                                f"Failed to create BM25 index for documents ({display_filenames})."
-                            )
-                            st.error(
-                                f"Failed to create BM25 index for documents ({display_filenames}). Vector indexing may still be active. Details: {e}"
-                            )
+                            display_filenames = ", ".join(st.session_state.uploaded_filenames)
+                            logger.exception(f"Failed to create BM25 index for documents ({display_filenames}).")
+                            st.error(f"Failed to create BM25 index for documents ({display_filenames}). Vector indexing may still be active. Details: {e}")
                     else:
-                        display_filenames = ", ".join(
-                            st.session_state.uploaded_filenames
-                        )
-                        logger.error(
-                            f"Vector indexing failed for documents ({display_filenames}). BM25 indexing skipped."
-                        )
-                        st.error(
-                            f"Documents ({display_filenames}) loaded but failed during vector indexing. BM25 indexing also skipped."
-                        )
+                        display_filenames = ", ".join(st.session_state.uploaded_filenames)
+                        logger.error(f"Vector indexing failed for documents ({display_filenames}). BM25 indexing skipped.")
+                        st.error(f"Documents ({display_filenames}) loaded but failed during vector indexing. BM25 indexing also skipped.")
                 else:
-                    logger.warning(
-                        "No processable chunks generated from documents. Indexing skipped."
-                    )
-                    st.warning(
-                        "No processable content found after loading all uploaded documents. Indexing skipped."
-                    )
+                    logger.warning("No processable chunks generated from documents. Indexing skipped.")
+                    st.warning("No processable content found after loading all uploaded documents. Indexing skipped.")
         elif not st.session_state.uploaded_filenames and uploaded_files:
-            logger.warning(
-                "Files were uploaded, but none could be successfully processed."
-            )
-            st.warning(
-                "Although files were uploaded, none could be successfully processed. Please check file formats and content."
-            )
+            logger.warning("Files were uploaded, but none could be successfully processed.")
+            st.warning("Although files were uploaded, none could be successfully processed. Please check file formats and content.")
+    else:
+        logger.info("Uploaded files are the same as the ones already processed. Skipping reprocessing.")
 
 if st.session_state.get("uploaded_filenames") and st.session_state.get(
     "document_processed"

@@ -53,6 +53,10 @@ def initialize_session_state():
         st.session_state.uploaded_filenames = []
     if "raw_documents" not in st.session_state:
         st.session_state.raw_documents = []
+    if "processed_files_info" not in st.session_state:
+        st.session_state.processed_files_info = {}
+    if "processed_context_file_info" not in st.session_state:
+        st.session_state.processed_context_file_info = None
     if "document_summary" not in st.session_state:
         st.session_state.document_summary = None
     if "document_keywords" not in st.session_state:
