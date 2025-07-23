@@ -82,7 +82,7 @@ def load_context_document():
                 if os.path.isfile(file_path):
                     raw_docs = load_document(file_path)
                     if raw_docs:
-                        chunks = chunk_documents(raw_docs)
+                        chunks = chunk_documents(raw_docs, CONTEXT_PDF_STORAGE_PATH)
                         if chunks:
                             index_documents(
                                 chunks, vector_db=st.session_state.CONTEXT_VECTOR_DB
