@@ -259,8 +259,8 @@ with st.sidebar:
             "Keywords:", st.session_state.document_keywords, height=100, disabled=True
         )
 
-st.title("📘 DocuMind-AI")
-st.markdown("### Your Intelligent Document Assistant")
+st.title("📘 MBSE - Requirement Generator")
+st.markdown("### Your AI Document Requirement Generator Assistant")
 st.markdown("---")
 
 if st.session_state.get("context_document_loaded"):
