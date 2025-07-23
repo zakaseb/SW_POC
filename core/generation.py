@@ -11,7 +11,11 @@ logger = get_logger(__name__)
 
 
 def generate_answer(
-    language_model, user_query, context_documents, conversation_history=""
+    language_model,
+    user_query,
+    context_documents,
+    conversation_history="",
+    persistent_memory="",
 ):
     """
     Generate an answer based on the user query, context documents, and conversation history.
@@ -47,6 +51,7 @@ def generate_answer(
                 "user_query": user_query,
                 "document_context": context_text,
                 "conversation_history": conversation_history,
+                "persistent_memory": persistent_memory,
             }
         )
 

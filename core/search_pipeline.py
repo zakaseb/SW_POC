@@ -8,13 +8,19 @@ logger = get_logger(__name__)
 
 
 def find_related_documents(
-    query, document_vector_db, bm25_index, bm25_corpus_chunks, document_processed_flag
+    query,
+    document_vector_db,
+    context_vector_db,
+    bm25_index,
+    bm25_corpus_chunks,
+    document_processed_flag,
 ):
     """
     Perform both semantic and BM25 search to find related document chunks.
     Returns a dictionary with 'semantic_results' and 'bm25_results'.
     """
     semantic_docs = []
+    context_docs = []
     bm25_retrieved_chunks = []
 
     if not query or not query.strip():
@@ -37,7 +43,19 @@ def find_related_documents(
             "bm25_results": bm25_retrieved_chunks,
         }
 
-    # 1. Semantic Search (Vector Search)
+    # 1. Semantic Search on Context Document (if available)
+    if context_vector_db:
+        logger.debug(f"Performing semantic search on context document for query: '{query[:50]}...'")
+        try:
+            context_docs = context_vector_db.similarity_search(query, k=K_SEMANTIC)
+            logger.info(f"Context search found {len(context_docs)} results.")
+        except Exception as e:
+            user_message = "An error occurred during context document search."
+            logger.exception(f"{user_message} Details: {e}")
+            st.error(f"{user_message} Check logs for details.")
+            context_docs = []
+
+    # 2. Semantic Search (Vector Search)
     logger.debug(f"Performing semantic search for query: '{query[:50]}...'")
     try:
         semantic_docs = document_vector_db.similarity_search(query, k=K_SEMANTIC)
@@ -47,6 +65,9 @@ def find_related_documents(
         logger.exception(f"{user_message} Details: {e}")
         st.error(f"{user_message} Check logs for details.")
         semantic_docs = []
+
+    # Combine semantic search results
+    semantic_docs.extend(context_docs)
 
     # 2. BM25 Search
     if bm25_index and bm25_corpus_chunks:

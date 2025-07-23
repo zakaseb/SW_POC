@@ -19,8 +19,10 @@ from urllib.parse import unquote
 
 logger = get_logger(__name__)
 
-def save_uploaded_file(uploaded_file):
-    file_path = os.path.join(PDF_STORAGE_PATH, uploaded_file.name)
+def save_uploaded_file(uploaded_file, storage_path=PDF_STORAGE_PATH):
+    # Create the storage directory if it doesn't exist
+    os.makedirs(storage_path, exist_ok=True)
+    file_path = os.path.join(storage_path, uploaded_file.name)
     try:
         with open(file_path, "wb") as file:
             file.write(uploaded_file.getbuffer())
@@ -122,7 +124,7 @@ def load_document(file_path):
         st.error(f"{user_message} Check logs for details.")
         return []
 
-def chunk_documents(raw_documents):
+def chunk_documents(raw_documents, storage_path=PDF_STORAGE_PATH):
     if not raw_documents:
         logger.warning("chunk_documents called with no raw documents.")
         st.warning("No content found in the document to chunk.")
@@ -144,12 +146,16 @@ def chunk_documents(raw_documents):
             if not source_path:
                 raise ValueError("Document is missing 'source' metadata.")
 
-            # Try to resolve file path from relative name (e.g., "Test%2BACME%2BCorp.docx")
-            # decoded_name = unquote(os.path.basename(source_path))
-            full_path = os.path.join(PDF_STORAGE_PATH, source_path)
-
+            # The 'source' metadata should already contain the full path to the file.
+            # We no longer need to join it with storage_path.
+            full_path = source_path
             if not os.path.exists(full_path):
-                raise FileNotFoundError(f"Resolved file path does not exist: {full_path}")
+                # If the path does not exist, attempt to resolve it using the provided storage_path as a fallback.
+                # This handles cases where a relative path might have been passed in the metadata.
+                logger.warning(f"Source path '{full_path}' not found. Attempting to resolve with storage path '{storage_path}'.")
+                full_path = os.path.join(storage_path, os.path.basename(source_path))
+                if not os.path.exists(full_path):
+                    raise FileNotFoundError(f"Resolved file path does not exist: {full_path}")
 
             dl_doc = converter.convert(source=full_path).document
             chunks = list(chunker.chunk(dl_doc))
@@ -170,14 +176,16 @@ def chunk_documents(raw_documents):
         st.error("An error occurred during hybrid chunking using Docling. Check logs for details.")
         return []
 
-def index_documents(document_chunks):
+def index_documents(document_chunks, vector_db=None):
     if not document_chunks:
         logger.warning("index_documents called with no chunks to index.")
         st.warning("No document chunks available to index.")
         return
     logger.info(f"Indexing {len(document_chunks)} document chunks.")
     try:
-        st.session_state.DOCUMENT_VECTOR_DB.add_documents(document_chunks)
+        if vector_db is None:
+            vector_db = st.session_state.DOCUMENT_VECTOR_DB
+        vector_db.add_documents(document_chunks)
         st.session_state.document_processed = True
         logger.info("Document chunks indexed successfully into vector store.")
     except Exception as e:

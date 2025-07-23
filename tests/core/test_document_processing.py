@@ -9,8 +9,7 @@ from langchain_core.documents import Document as LangchainDocument
 from docx.opc.exceptions import PackageNotFoundError
 
 # Specific error for PDF
-import pdfplumber # Keep for pdfplumber.exceptions.PDFSyntaxError below if used directly
-from pdfplumber.exceptions import PDFSyntaxError # Import directly
+import pdfplumber
 
 # Modules to test
 from core.document_processing import (
@@ -62,23 +61,16 @@ def mock_logger_fixture():
 # --- Tests for save_uploaded_file (from previous step, confirmed good) ---
 
 
-@patch(OS_PATH_JOIN_PATH, return_value="/fake/path/to/file.pdf")
-@patch(MOCK_OPEN_PATH)
-def test_save_uploaded_file_success(mock_open_file, mock_os_join, mock_logger_fixture):
-    mock_uploaded_file = MagicMock()
-    mock_uploaded_file.name = "file.pdf"
-    mock_uploaded_file.getbuffer.return_value = b"file_content"
+def test_save_uploaded_file_success(tmp_path):
+    storage_path = tmp_path / "storage"
+    uploaded_file = MagicMock()
+    uploaded_file.name = "test.pdf"
+    uploaded_file.getbuffer.return_value = b"some content"
 
-    with patch.object(config, "PDF_STORAGE_PATH", "/fake/storage"):
-        result_path = save_uploaded_file(mock_uploaded_file)
+    file_path = save_uploaded_file(uploaded_file, str(storage_path))
 
-    mock_os_join.assert_called_once_with("/fake/storage", "file.pdf")
-    mock_open_file.assert_called_once_with("/fake/path/to/file.pdf", "wb")
-    mock_open_file().write.assert_called_once_with(b"file_content")
-    assert result_path == "/fake/path/to/file.pdf"
-    mock_logger_fixture.info.assert_called_once_with(
-        "File 'file.pdf' saved to '/fake/path/to/file.pdf'."
-    )
+    assert file_path == str(storage_path / "test.pdf")
+    assert (storage_path / "test.pdf").read_bytes() == b"some content"
 
 
 @patch(OS_PATH_JOIN_PATH, return_value="/fake/path/to/file.pdf")
@@ -180,10 +172,10 @@ def test_load_document_unsupported_type(
     documents = load_document(UNSUPPORTED_FILE_PATH)  # .png is unsupported
     assert documents == []
     mock_st_error.assert_called_once_with(
-        "Unsupported file type: '.png' for file 'sample.png'. Please upload a PDF, DOCX, or TXT file."
+        "Unsupported file type: '.png' for file 'sample.png'."
     )
     mock_logger_fixture.warning.assert_called_with(
-        "Unsupported file type: '.png' for file 'sample.png'. Please upload a PDF, DOCX, or TXT file."
+        "Unsupported file type: '.png' for file 'sample.png'."
     )
 
 
@@ -235,7 +227,7 @@ def test_load_document_txt_unicode_decode_error(
     documents = load_document(BAD_ENCODING_TXT_PATH)
     assert documents == []
     mock_st_error.assert_called_once_with(
-        f"Failed to load TXT file '{os.path.basename(BAD_ENCODING_TXT_PATH)}': The file is not UTF-8 encoded. Please ensure it's a plain text file with UTF-8 encoding."
+        f"Failed to load TXT file '{os.path.basename(BAD_ENCODING_TXT_PATH)}': The file is not UTF-8 encoded."
     )
     mock_logger_fixture.error.assert_called_once()
 
@@ -247,7 +239,7 @@ def test_load_document_pdf_syntax_error(
     mock_st_error, mock_pdf_loader, mock_basename, mock_logger_fixture
 ):
     mock_loader_instance = mock_pdf_loader.return_value
-    mock_loader_instance.load.side_effect = PDFSyntaxError( # Use direct import
+    mock_loader_instance.load.side_effect = pdfplumber.pdf.PDFSyntaxError(
         "Mocked PDF Syntax Error"
     )
     documents = load_document(CORRUPTED_PDF_PATH)
@@ -261,31 +253,34 @@ def test_load_document_pdf_syntax_error(
 # --- Tests for chunk_documents (from previous step, confirmed good) ---
 
 
-@patch(RECURSIVE_SPLITTER_PATH)
-def test_chunk_documents_success(mock_splitter_class, mock_logger_fixture):
-    mock_splitter_instance = MagicMock()
-    mock_chunk = LangchainDocument(
-        page_content="chunked content", metadata={"source": "test.pdf"}
-    )
-    mock_splitter_instance.split_documents.return_value = [mock_chunk]
-    mock_splitter_class.return_value = mock_splitter_instance
+@patch('core.document_processing.DocumentConverter')
+@patch('core.document_processing.HybridChunker')
+@patch('core.document_processing.AutoTokenizer.from_pretrained')
+@patch('os.path.exists', return_value=True)
+def test_chunk_documents_success(mock_exists, mock_tokenizer, mock_chunker, mock_converter, mock_logger_fixture):
+    # Setup mock converter and chunker behavior
+    mock_dl_doc = MagicMock()
+    mock_converter.return_value.convert.return_value.document = mock_dl_doc
+
+    mock_chunk_obj = MagicMock()
+    mock_chunk_obj.text = "chunked content"
+    mock_chunk_obj.meta.headings = ["Header 1"]
+    mock_chunker.return_value.chunk.return_value = [mock_chunk_obj]
 
     raw_docs = [
         LangchainDocument(
-            page_content="This is a long document.", metadata={"source": "test.pdf"}
+            page_content="This is a long document.", metadata={"source": "/fake/path/test.pdf"}
         )
     ]
-    chunks = chunk_documents(raw_docs)
 
-    mock_splitter_class.assert_called_once_with(
-        chunk_size=1000, chunk_overlap=200, add_start_index=True
-    )
-    mock_splitter_instance.split_documents.assert_called_once_with(raw_docs)
+    chunks = chunk_documents(raw_docs, storage_path="/fake/path")
+
     assert len(chunks) == 1
     assert chunks[0].page_content == "chunked content"
-    assert chunks[0].metadata["source"] == "test.pdf"
-    mock_logger_fixture.info.assert_any_call("Starting to chunk 1 raw document(s).")
-    mock_logger_fixture.info.assert_any_call("Chunking complete, 1 chunks created.")
+    assert chunks[0].metadata["source"] == "/fake/path/test.pdf"
+    assert chunks[0].metadata["headings"] == ["Header 1"]
+    mock_logger_fixture.info.assert_any_call("Starting Docling hybrid chunking on 1 document(s).")
+    mock_logger_fixture.info.assert_any_call("Docling hybrid chunking complete: 1 chunks created.")
 
 
 @patch(STREAMLIT_WARNING_PATH)
@@ -300,33 +295,30 @@ def test_chunk_documents_empty_raw_docs(mock_st_warning, mock_logger_fixture):
     )
 
 
-@patch(RECURSIVE_SPLITTER_PATH)
-@patch(STREAMLIT_WARNING_PATH)
-def test_chunk_documents_no_processable_chunks(
-    mock_st_warning, mock_splitter_class, mock_logger_fixture
+@patch('core.document_processing.DocumentConverter')
+@patch('core.document_processing.HybridChunker')
+@patch('core.document_processing.AutoTokenizer.from_pretrained')
+@patch('core.document_processing.os.path.exists', return_value=True)
+def test_chunk_documents_no_chunks_returned(
+    mock_exists, mock_tokenizer, mock_chunker, mock_converter, mock_logger_fixture
 ):
-    mock_splitter_instance = MagicMock()
-    mock_splitter_instance.split_documents.return_value = []
-    mock_splitter_class.return_value = mock_splitter_instance
+    mock_dl_doc = MagicMock()
+    mock_converter.return_value.convert.return_value.document = mock_dl_doc
+    mock_chunker.return_value.chunk.return_value = [] # No chunks
 
-    raw_docs = [LangchainDocument(page_content=".")]
+    raw_docs = [LangchainDocument(page_content=".", metadata={"source": "/fake/path/doc.pdf"})]
     chunks = chunk_documents(raw_docs)
 
     assert chunks == []
-    mock_st_warning.assert_called_once_with(
-        "Document chunking resulted in no processable text chunks. The document might be valid but contain no extractable text after initial processing, or the text is too short."
-    )
-    mock_logger_fixture.warning.assert_called_once_with(
-        "Document chunking resulted in no processable text chunks."
-    )
+    mock_logger_fixture.info.assert_any_call("Docling hybrid chunking complete: 0 chunks created.")
 
 
-@patch(RECURSIVE_SPLITTER_PATH, side_effect=Exception("Chunking failed"))
+@patch('core.document_processing.DocumentConverter', side_effect=Exception("Chunking failed"))
 @patch(STREAMLIT_ERROR_PATH)
 def test_chunk_documents_exception(
-    mock_st_error, mock_splitter_class_exception, mock_logger_fixture
+    mock_st_error, mock_converter_exception, mock_logger_fixture
 ):
-    raw_docs = [LangchainDocument(page_content="Some content")]
+    raw_docs = [LangchainDocument(page_content="Some content", metadata={"source": "/fake/path/doc.pdf"})]
     chunks = chunk_documents(raw_docs)
 
     assert chunks == []
@@ -362,7 +354,7 @@ def test_index_documents_success(mock_session_state, mock_logger_fixture):
 def test_index_documents_empty_chunks(mock_st_warning, mock_logger_fixture):
     index_documents([])
     mock_st_warning.assert_called_once_with(
-        "No document chunks available to index. This may happen if the document was empty or text extraction failed."
+        "No document chunks available to index."
     )
     mock_logger_fixture.warning.assert_called_once_with(
         "index_documents called with no chunks to index."
