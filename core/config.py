@@ -49,6 +49,20 @@ Document:
 Keywords:
 """
 
+CHUNK_CLASSIFICATION_PROMPT_TEMPLATE = """
+You are an expert document analyst. Classify the following text chunk into one of two categories:
+1.  **General Context**: Portions of a document that provide broad, high-level information. This includes introductions, overviews, and background information that help a reader understand the overall context of the document, but do not contain specific, detailed requirements.
+2.  **Requirements**: Portions of a document that contain specific, detailed requirements, specifications, or instructions. These are the granular details of a project, system, or process.
+
+Analyze the text chunk provided below and determine which category it belongs to.
+Your response should be a single word: either "General Context" or "Requirements".
+
+Text Chunk:
+{chunk_text}
+
+Classification:
+"""
+
 # Model Names
 OLLAMA_EMBEDDING_MODEL_NAME = os.getenv(
     "OLLAMA_EMBEDDING_MODEL_NAME", "llama3.3:latest"

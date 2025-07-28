@@ -318,25 +318,47 @@ if uploaded_files:
             st.session_state.raw_documents = all_raw_docs_for_session
             logger.info(f"Total {len(all_raw_docs_for_session)} raw documents collected from {len(successfully_loaded_filenames)} files.")
 
-            with st.spinner(f"Chunking and indexing {len(st.session_state.uploaded_filenames)} document(s)..."):
-                logger.debug("Starting document chunking.")
-                processed_chunks = chunk_documents(st.session_state.raw_documents)
-                if processed_chunks:
-                    logger.info(f"{len(processed_chunks)} chunks created.")
-                    logger.debug("Starting document indexing.")
-                    index_documents(processed_chunks)  # Modifies st.session_state
+            with st.spinner(f"Chunking, classifying, and indexing {len(st.session_state.uploaded_filenames)} document(s)..."):
+                logger.debug("Starting document chunking and classification.")
+                general_context_chunks, requirements_chunks = chunk_documents(st.session_state.raw_documents)
+
+                total_chunks = len(general_context_chunks) + len(requirements_chunks)
+                if total_chunks > 0:
+                    st.success(f"Document chunking and classification complete. Found {len(general_context_chunks)} general context chunks and {len(requirements_chunks)} requirements chunks.")
+                    logger.info(f"{total_chunks} total chunks created.")
+
+                    # Index general context chunks into the context vector DB
+                    if general_context_chunks:
+                        logger.debug("Starting indexing of general context chunks.")
+                        index_documents(general_context_chunks, vector_db=st.session_state.CONTEXT_VECTOR_DB)
+                        logger.info(f"{len(general_context_chunks)} general context chunks indexed.")
+                        st.info(f"ℹ️ {len(general_context_chunks)} chunks have been added to the session's persistent memory.")
+
+                    # Index requirements chunks into the main document vector DB
+                    if requirements_chunks:
+                        logger.debug("Starting indexing of requirements chunks.")
+                        index_documents(requirements_chunks, vector_db=st.session_state.DOCUMENT_VECTOR_DB)
+                        logger.info(f"{len(requirements_chunks)} requirements chunks indexed.")
+
+                    # Set document_processed flag to true if any chunk was processed
+                    st.session_state.document_processed = True
 
                     if st.session_state.document_processed:
-                        logger.info("Vector indexing successful.")
+                        logger.info("Vector indexing successful for one or both chunk types.")
                         try:
-                            logger.debug("Starting BM25 indexing.")
-                            corpus_texts = [chunk.page_content for chunk in processed_chunks]
-                            tokenized_corpus = [doc.lower().split(" ") for doc in corpus_texts]
-                            st.session_state.bm25_index = BM25Okapi(tokenized_corpus)
-                            st.session_state.bm25_corpus_chunks = processed_chunks
-                            display_filenames = ", ".join(st.session_state.uploaded_filenames)
-                            logger.info(f"BM25 index created for documents: {display_filenames}")
-                            st.success(f"✅ Documents ({display_filenames}) processed and indexed successfully!")
+                            logger.debug("Starting BM25 indexing on requirements chunks.")
+                            corpus_texts = [chunk.page_content for chunk in requirements_chunks]
+                            if corpus_texts:
+                                tokenized_corpus = [doc.lower().split(" ") for doc in corpus_texts]
+                                st.session_state.bm25_index = BM25Okapi(tokenized_corpus)
+                                st.session_state.bm25_corpus_chunks = requirements_chunks
+                                display_filenames = ", ".join(st.session_state.uploaded_filenames)
+                                logger.info(f"BM25 index created for documents: {display_filenames}")
+                                st.success(f"✅ Documents ({display_filenames}) processed and indexed successfully!")
+                            else:
+                                logger.info("No requirements chunks to index for BM25.")
+                                st.success("✅ Documents processed. No specific requirements chunks found for keyword search indexing.")
+
                         except Exception as e:
                             display_filenames = ", ".join(st.session_state.uploaded_filenames)
                             logger.exception(f"Failed to create BM25 index for documents ({display_filenames}).")
