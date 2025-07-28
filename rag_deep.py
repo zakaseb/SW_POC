@@ -147,7 +147,7 @@ with st.sidebar:
                 # Process and index the context document
                 raw_docs = load_document(saved_path)
                 if raw_docs:
-                    chunks = chunk_documents(raw_docs, CONTEXT_PDF_STORAGE_PATH)
+                    _, _, chunks = chunk_documents(raw_docs, CONTEXT_PDF_STORAGE_PATH, classify=False)
                     if chunks:
                         index_documents(
                             chunks, vector_db=st.session_state.CONTEXT_VECTOR_DB
@@ -320,7 +320,7 @@ if uploaded_files:
 
             with st.spinner(f"Chunking, classifying, and indexing {len(st.session_state.uploaded_filenames)} document(s)..."):
                 logger.debug("Starting document chunking and classification.")
-                general_context_chunks, requirements_chunks = chunk_documents(st.session_state.raw_documents)
+                general_context_chunks, requirements_chunks, _ = chunk_documents(st.session_state.raw_documents, classify=True)
 
                 total_chunks = len(general_context_chunks) + len(requirements_chunks)
                 if total_chunks > 0:

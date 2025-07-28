@@ -124,11 +124,11 @@ def load_document(file_path):
         st.error(f"{user_message} Check logs for details.")
         return []
 
-def chunk_documents(raw_documents, storage_path=PDF_STORAGE_PATH):
+def chunk_documents(raw_documents, storage_path=PDF_STORAGE_PATH, classify=False):
     if not raw_documents:
         logger.warning("chunk_documents called with no raw documents.")
         st.warning("No content found in the document to chunk.")
-        return [], []
+        return [], [], []
 
     logger.info(f"Starting Docling hybrid chunking on {len(raw_documents)} document(s).")
 
@@ -138,8 +138,8 @@ def chunk_documents(raw_documents, storage_path=PDF_STORAGE_PATH):
             tokenizer=AutoTokenizer.from_pretrained("sentence-transformers/all-MiniLM-L6-v2")
         )
         chunker = HybridChunker(tokenizer=hf_tokenizer, merge_peers=True)
-        language_model = get_language_model()
 
+        all_chunks = []
         general_context_chunks = []
         requirements_chunks = []
 
@@ -159,31 +159,44 @@ def chunk_documents(raw_documents, storage_path=PDF_STORAGE_PATH):
             chunks = list(chunker.chunk(dl_doc))
 
             for c in chunks:
-                classification = classify_chunk(language_model, c.text)
-                if classification == "General Context":
-                    general_context_chunks.append(
-                        LangchainDocument(
-                            page_content=c.text,
-                            metadata={**doc.metadata, "headings": c.meta.headings, "in_memory": True},
+                if classify:
+                    language_model = get_language_model()
+                    classification = classify_chunk(language_model, c.text)
+                    if classification == "General Context":
+                        general_context_chunks.append(
+                            LangchainDocument(
+                                page_content=c.text,
+                                metadata={**doc.metadata, "headings": c.meta.headings, "in_memory": True},
+                            )
                         )
-                    )
+                    else:
+                        requirements_chunks.append(
+                            LangchainDocument(
+                                page_content=c.text,
+                                metadata={**doc.metadata, "headings": c.meta.headings, "in_memory": False},
+                            )
+                        )
                 else:
-                    requirements_chunks.append(
+                    all_chunks.append(
                         LangchainDocument(
                             page_content=c.text,
                             metadata={**doc.metadata, "headings": c.meta.headings, "in_memory": False},
                         )
                     )
 
-        logger.info(f"Docling hybrid chunking and classification complete.")
-        logger.info(f"  - General Context chunks: {len(general_context_chunks)}")
-        logger.info(f"  - Requirements chunks: {len(requirements_chunks)}")
-        return general_context_chunks, requirements_chunks
+        if classify:
+            logger.info(f"Docling hybrid chunking and classification complete.")
+            logger.info(f"  - General Context chunks: {len(general_context_chunks)}")
+            logger.info(f"  - Requirements chunks: {len(requirements_chunks)}")
+        else:
+            logger.info(f"Docling hybrid chunking complete: {len(all_chunks)} chunks created.")
+
+        return general_context_chunks, requirements_chunks, all_chunks
 
     except Exception as e:
         logger.exception(f"An error occurred during hybrid chunking using Docling. Details: {e}")
         st.error("An error occurred during hybrid chunking using Docling. Check logs for details.")
-        return [], []
+        return [], [], []
 
 def index_documents(document_chunks, vector_db=None):
     if not document_chunks:
