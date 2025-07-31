@@ -14,6 +14,7 @@ def find_related_documents(
     bm25_index,
     bm25_corpus_chunks,
     document_processed_flag,
+    persistent_memory_chunks=None,
 ):
     """
     Perform both semantic and BM25 search to find related document chunks.
@@ -54,6 +55,11 @@ def find_related_documents(
             logger.exception(f"{user_message} Details: {e}")
             st.error(f"{user_message} Check logs for details.")
             context_docs = []
+
+    # Add all persistent memory chunks to the context
+    if persistent_memory_chunks:
+        context_docs.extend(persistent_memory_chunks)
+        logger.info(f"Added {len(persistent_memory_chunks)} chunks from persistent memory to the context.")
 
     # 2. Semantic Search (Vector Search)
     logger.debug(f"Performing semantic search for query: '{query[:50]}...'")

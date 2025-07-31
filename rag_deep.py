@@ -147,10 +147,10 @@ with st.sidebar:
                 # Process and index the context document
                 raw_docs = load_document(saved_path)
                 if raw_docs:
-                    _, _, chunks = chunk_documents(raw_docs, CONTEXT_PDF_STORAGE_PATH, classify=False)
-                    if chunks:
+                    _, _, all_chunks = chunk_documents(raw_docs, CONTEXT_PDF_STORAGE_PATH, classify=False)
+                    if all_chunks:
                         index_documents(
-                            chunks, vector_db=st.session_state.CONTEXT_VECTOR_DB
+                            all_chunks, vector_db=st.session_state.CONTEXT_VECTOR_DB
                         )
                         st.session_state.processed_context_file_info = context_file_info
                         st.success("Context document successfully uploaded!")
@@ -329,6 +329,7 @@ if uploaded_files:
 
                     # Index general context chunks into the context vector DB
                     if general_context_chunks:
+                        st.session_state.general_context_chunks = general_context_chunks
                         logger.debug("Starting indexing of general context chunks.")
                         index_documents(general_context_chunks, vector_db=st.session_state.CONTEXT_VECTOR_DB)
                         logger.info(f"{len(general_context_chunks)} general context chunks indexed.")
@@ -428,6 +429,7 @@ if st.session_state.document_processed:
                     st.session_state.bm25_index,
                     st.session_state.bm25_corpus_chunks,
                     st.session_state.document_processed,
+                    persistent_memory_chunks=st.session_state.get("general_context_chunks", []),
                 )
                 logger.info(
                     f"Retrieved {len(retrieved_results_dict.get('semantic_results',[]))} semantic and {len(retrieved_results_dict.get('bm25_results',[]))} BM25 results."
