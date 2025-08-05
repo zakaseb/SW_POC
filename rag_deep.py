@@ -31,11 +31,7 @@ from core.document_processing import (
     chunk_documents,
     index_documents,
 )
-from core.search_pipeline import (
-    find_related_documents,
-    combine_results_rrf,
-    rerank_documents,
-)
+from core.search_pipeline import get_all_documents
 from core.generation import generate_answer, generate_summary, generate_keywords
 from core.session_manager import (
     initialize_session_state,
@@ -422,74 +418,27 @@ if st.session_state.document_processed:
                 formatted_history = "\n".join(history_lines)
                 logger.debug(f"Formatted history for prompt: {formatted_history}")
 
-                retrieved_results_dict = find_related_documents(
-                    user_input,
-                    st.session_state.DOCUMENT_VECTOR_DB,
-                    st.session_state.CONTEXT_VECTOR_DB,
-                    st.session_state.bm25_index,
-                    st.session_state.bm25_corpus_chunks,
-                    st.session_state.document_processed,
-                    persistent_memory_chunks=st.session_state.get("general_context_chunks", []),
-                )
-                logger.info(
-                    f"Retrieved {len(retrieved_results_dict.get('semantic_results',[]))} semantic and {len(retrieved_results_dict.get('bm25_results',[]))} BM25 results."
+                final_context_docs = get_all_documents(
+                    document_vector_db=st.session_state.DOCUMENT_VECTOR_DB,
+                    context_vector_db=st.session_state.CONTEXT_VECTOR_DB,
+                    general_context_chunks=st.session_state.get("general_context_chunks", []),
                 )
 
-                hybrid_search_docs = combine_results_rrf(retrieved_results_dict)
-                logger.info(
-                    f"Combined RRF results: {len(hybrid_search_docs)} documents."
-                )
-
-                final_context_docs = []
-                if hybrid_search_docs:
-                    docs_for_reranking = hybrid_search_docs[:TOP_K_FOR_RERANKER]
-                    if RERANKER_MODEL:
-                        logger.debug(
-                            f"Re-ranking top {len(docs_for_reranking)} documents."
-                        )
-                        with st.spinner(
-                            f"Re-ranking top {len(docs_for_reranking)} documents..."
-                        ):
-                            final_context_docs = rerank_documents(
-                                user_input,
-                                docs_for_reranking,
-                                RERANKER_MODEL,
-                                top_n=FINAL_TOP_N_FOR_CONTEXT,
-                            )
-                        logger.info(
-                            f"Re-ranked results: {len(final_context_docs)} documents."
-                        )
-                    else:
-                        logger.info(
-                            "Re-ranker model not loaded. Using documents from hybrid search directly."
-                        )
-                        st.info(
-                            "Re-ranker model not loaded. Using documents from hybrid search directly (top results)."
-                        )
-                        final_context_docs = docs_for_reranking[
-                            :FINAL_TOP_N_FOR_CONTEXT
-                        ]
-
-                    if not final_context_docs:
-                        logger.warning(
-                            "No relevant sections found after re-ranking (or hybrid search if reranker disabled)."
-                        )
-                        ai_response = "After re-ranking, no relevant sections were found in the loaded documents to answer your query."
-                    else:
-                        logger.debug("Generating answer with final context documents.")
-                        persistent_memory_str = "\n".join(
-                            [f"{msg['role']}: {msg['content']}" for msg in st.session_state.memory]
-                        )
-                        ai_response = generate_answer(
-                            LANGUAGE_MODEL,
-                            user_query=user_input,
-                            context_documents=final_context_docs,
-                            conversation_history=formatted_history,
-                            persistent_memory=persistent_memory_str,
-                        )
+                if not final_context_docs:
+                    logger.warning("No documents found in any vector store.")
+                    ai_response = "No documents have been processed yet. Please upload a document to begin."
                 else:
-                    logger.warning("No relevant sections found from hybrid search.")
-                    ai_response = "I could not find relevant sections in the loaded documents to answer your query. Please ensure the documents contain information related to your query or try rephrasing."
+                    logger.debug("Generating answer with all available documents.")
+                    persistent_memory_str = "\n".join(
+                        [f"{msg['role']}: {msg['content']}" for msg in st.session_state.memory]
+                    )
+                    ai_response = generate_answer(
+                        LANGUAGE_MODEL,
+                        user_query=user_input,
+                        context_documents=final_context_docs,
+                        conversation_history=formatted_history,
+                        persistent_memory=persistent_memory_str,
+                    )
 
             logger.info(
                 f"AI Response: {ai_response[:100]}..."
