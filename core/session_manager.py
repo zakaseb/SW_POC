@@ -82,13 +82,13 @@ def load_context_document():
                 if os.path.isfile(file_path):
                     raw_docs = load_document(file_path)
                     if raw_docs:
-                        chunks = chunk_documents(raw_docs, CONTEXT_PDF_STORAGE_PATH)
-                        if chunks:
-                            index_documents(
-                                chunks, vector_db=st.session_state.CONTEXT_VECTOR_DB
-                            )
-                            st.session_state.context_document_loaded = True
-                            logger.info(f"Context document '{filename}' loaded and indexed.")
+                        _, _, all_chunks = chunk_documents(raw_docs, CONTEXT_PDF_STORAGE_PATH, classify=False)
+                        if all_chunks:
+                                index_documents(
+                                all_chunks, vector_db=st.session_state.CONTEXT_VECTOR_DB
+                                )
+                                st.session_state.context_document_loaded = True
+                                logger.info(f"Context document '{filename}' loaded and indexed.")
                         else:
                             logger.warning(
                                 f"No chunks generated from context document '{filename}'."

@@ -31,11 +31,7 @@ from core.document_processing import (
     chunk_documents,
     index_documents,
 )
-from core.search_pipeline import (
-    find_related_documents,
-    combine_results_rrf,
-    rerank_documents,
-)
+from core.search_pipeline import get_all_documents
 from core.generation import generate_answer, generate_summary, generate_keywords
 from core.session_manager import (
     initialize_session_state,
@@ -147,10 +143,10 @@ with st.sidebar:
                 # Process and index the context document
                 raw_docs = load_document(saved_path)
                 if raw_docs:
-                    chunks = chunk_documents(raw_docs, CONTEXT_PDF_STORAGE_PATH)
-                    if chunks:
+                    _, _, all_chunks = chunk_documents(raw_docs, CONTEXT_PDF_STORAGE_PATH, classify=False)
+                    if all_chunks:
                         index_documents(
-                            chunks, vector_db=st.session_state.CONTEXT_VECTOR_DB
+                            all_chunks, vector_db=st.session_state.CONTEXT_VECTOR_DB
                         )
                         st.session_state.processed_context_file_info = context_file_info
                         st.success("Context document successfully uploaded!")
@@ -318,25 +314,48 @@ if uploaded_files:
             st.session_state.raw_documents = all_raw_docs_for_session
             logger.info(f"Total {len(all_raw_docs_for_session)} raw documents collected from {len(successfully_loaded_filenames)} files.")
 
-            with st.spinner(f"Chunking and indexing {len(st.session_state.uploaded_filenames)} document(s)..."):
-                logger.debug("Starting document chunking.")
-                processed_chunks = chunk_documents(st.session_state.raw_documents)
-                if processed_chunks:
-                    logger.info(f"{len(processed_chunks)} chunks created.")
-                    logger.debug("Starting document indexing.")
-                    index_documents(processed_chunks)  # Modifies st.session_state
+            with st.spinner(f"Chunking, classifying, and indexing {len(st.session_state.uploaded_filenames)} document(s)..."):
+                logger.debug("Starting document chunking and classification.")
+                general_context_chunks, requirements_chunks, _ = chunk_documents(st.session_state.raw_documents, classify=True)
+
+                total_chunks = len(general_context_chunks) + len(requirements_chunks)
+                if total_chunks > 0:
+                    st.success(f"Document chunking and classification complete. Found {len(general_context_chunks)} general context chunks and {len(requirements_chunks)} requirements chunks.")
+                    logger.info(f"{total_chunks} total chunks created.")
+
+                    # Index general context chunks into the context vector DB
+                    if general_context_chunks:
+                        st.session_state.general_context_chunks = general_context_chunks
+                        logger.debug("Starting indexing of general context chunks.")
+                        index_documents(general_context_chunks, vector_db=st.session_state.CONTEXT_VECTOR_DB)
+                        logger.info(f"{len(general_context_chunks)} general context chunks indexed.")
+                        st.info(f"ℹ️ {len(general_context_chunks)} chunks have been added to the session's persistent memory.")
+
+                    # Index requirements chunks into the main document vector DB
+                    if requirements_chunks:
+                        logger.debug("Starting indexing of requirements chunks.")
+                        index_documents(requirements_chunks, vector_db=st.session_state.DOCUMENT_VECTOR_DB)
+                        logger.info(f"{len(requirements_chunks)} requirements chunks indexed.")
+
+                    # Set document_processed flag to true if any chunk was processed
+                    st.session_state.document_processed = True
 
                     if st.session_state.document_processed:
-                        logger.info("Vector indexing successful.")
+                        logger.info("Vector indexing successful for one or both chunk types.")
                         try:
-                            logger.debug("Starting BM25 indexing.")
-                            corpus_texts = [chunk.page_content for chunk in processed_chunks]
-                            tokenized_corpus = [doc.lower().split(" ") for doc in corpus_texts]
-                            st.session_state.bm25_index = BM25Okapi(tokenized_corpus)
-                            st.session_state.bm25_corpus_chunks = processed_chunks
-                            display_filenames = ", ".join(st.session_state.uploaded_filenames)
-                            logger.info(f"BM25 index created for documents: {display_filenames}")
-                            st.success(f"✅ Documents ({display_filenames}) processed and indexed successfully!")
+                            logger.debug("Starting BM25 indexing on requirements chunks.")
+                            corpus_texts = [chunk.page_content for chunk in requirements_chunks]
+                            if corpus_texts:
+                                tokenized_corpus = [doc.lower().split(" ") for doc in corpus_texts]
+                                st.session_state.bm25_index = BM25Okapi(tokenized_corpus)
+                                st.session_state.bm25_corpus_chunks = requirements_chunks
+                                display_filenames = ", ".join(st.session_state.uploaded_filenames)
+                                logger.info(f"BM25 index created for documents: {display_filenames}")
+                                st.success(f"✅ Documents ({display_filenames}) processed and indexed successfully!")
+                            else:
+                                logger.info("No requirements chunks to index for BM25.")
+                                st.success("✅ Documents processed. No specific requirements chunks found for keyword search indexing.")
+
                         except Exception as e:
                             display_filenames = ", ".join(st.session_state.uploaded_filenames)
                             logger.exception(f"Failed to create BM25 index for documents ({display_filenames}).")
@@ -399,73 +418,27 @@ if st.session_state.document_processed:
                 formatted_history = "\n".join(history_lines)
                 logger.debug(f"Formatted history for prompt: {formatted_history}")
 
-                retrieved_results_dict = find_related_documents(
-                    user_input,
-                    st.session_state.DOCUMENT_VECTOR_DB,
-                    st.session_state.CONTEXT_VECTOR_DB,
-                    st.session_state.bm25_index,
-                    st.session_state.bm25_corpus_chunks,
-                    st.session_state.document_processed,
-                )
-                logger.info(
-                    f"Retrieved {len(retrieved_results_dict.get('semantic_results',[]))} semantic and {len(retrieved_results_dict.get('bm25_results',[]))} BM25 results."
+                final_context_docs = get_all_documents(
+                    document_vector_db=st.session_state.DOCUMENT_VECTOR_DB,
+                    context_vector_db=st.session_state.CONTEXT_VECTOR_DB,
+                    general_context_chunks=st.session_state.get("general_context_chunks", []),
                 )
 
-                hybrid_search_docs = combine_results_rrf(retrieved_results_dict)
-                logger.info(
-                    f"Combined RRF results: {len(hybrid_search_docs)} documents."
-                )
-
-                final_context_docs = []
-                if hybrid_search_docs:
-                    docs_for_reranking = hybrid_search_docs[:TOP_K_FOR_RERANKER]
-                    if RERANKER_MODEL:
-                        logger.debug(
-                            f"Re-ranking top {len(docs_for_reranking)} documents."
-                        )
-                        with st.spinner(
-                            f"Re-ranking top {len(docs_for_reranking)} documents..."
-                        ):
-                            final_context_docs = rerank_documents(
-                                user_input,
-                                docs_for_reranking,
-                                RERANKER_MODEL,
-                                top_n=FINAL_TOP_N_FOR_CONTEXT,
-                            )
-                        logger.info(
-                            f"Re-ranked results: {len(final_context_docs)} documents."
-                        )
-                    else:
-                        logger.info(
-                            "Re-ranker model not loaded. Using documents from hybrid search directly."
-                        )
-                        st.info(
-                            "Re-ranker model not loaded. Using documents from hybrid search directly (top results)."
-                        )
-                        final_context_docs = docs_for_reranking[
-                            :FINAL_TOP_N_FOR_CONTEXT
-                        ]
-
-                    if not final_context_docs:
-                        logger.warning(
-                            "No relevant sections found after re-ranking (or hybrid search if reranker disabled)."
-                        )
-                        ai_response = "After re-ranking, no relevant sections were found in the loaded documents to answer your query."
-                    else:
-                        logger.debug("Generating answer with final context documents.")
-                        persistent_memory_str = "\n".join(
-                            [f"{msg['role']}: {msg['content']}" for msg in st.session_state.memory]
-                        )
-                        ai_response = generate_answer(
-                            LANGUAGE_MODEL,
-                            user_query=user_input,
-                            context_documents=final_context_docs,
-                            conversation_history=formatted_history,
-                            persistent_memory=persistent_memory_str,
-                        )
+                if not final_context_docs:
+                    logger.warning("No documents found in any vector store.")
+                    ai_response = "No documents have been processed yet. Please upload a document to begin."
                 else:
-                    logger.warning("No relevant sections found from hybrid search.")
-                    ai_response = "I could not find relevant sections in the loaded documents to answer your query. Please ensure the documents contain information related to your query or try rephrasing."
+                    logger.debug("Generating answer with all available documents.")
+                    persistent_memory_str = "\n".join(
+                        [f"{msg['role']}: {msg['content']}" for msg in st.session_state.memory]
+                    )
+                    ai_response = generate_answer(
+                        LANGUAGE_MODEL,
+                        user_query=user_input,
+                        context_documents=final_context_docs,
+                        conversation_history=formatted_history,
+                        persistent_memory=persistent_memory_str,
+                    )
 
             logger.info(
                 f"AI Response: {ai_response[:100]}..."

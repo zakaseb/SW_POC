@@ -5,10 +5,10 @@ from langchain_core.documents import Document as LangchainDocument
 import docx
 from docx.opc.exceptions import PackageNotFoundError as DocxPackageNotFoundError
 import pdfplumber
-from sympy import false
-
 from .config import PDF_STORAGE_PATH
 from .logger_config import get_logger
+from .model_loader import get_language_model
+from .generation import classify_chunk
 
 # Docling imports
 from docling.document_converter import DocumentConverter
@@ -124,11 +124,11 @@ def load_document(file_path):
         st.error(f"{user_message} Check logs for details.")
         return []
 
-def chunk_documents(raw_documents, storage_path=PDF_STORAGE_PATH):
+def chunk_documents(raw_documents, storage_path=PDF_STORAGE_PATH, classify=False):
     if not raw_documents:
         logger.warning("chunk_documents called with no raw documents.")
         st.warning("No content found in the document to chunk.")
-        return []
+        return [], [], []
 
     logger.info(f"Starting Docling hybrid chunking on {len(raw_documents)} document(s).")
 
@@ -139,19 +139,17 @@ def chunk_documents(raw_documents, storage_path=PDF_STORAGE_PATH):
         )
         chunker = HybridChunker(tokenizer=hf_tokenizer, merge_peers=True)
 
-        processed_chunks = []
+        all_chunks = []
+        general_context_chunks = []
+        requirements_chunks = []
 
         for doc in raw_documents:
             source_path = doc.metadata.get("source")
             if not source_path:
                 raise ValueError("Document is missing 'source' metadata.")
 
-            # The 'source' metadata should already contain the full path to the file.
-            # We no longer need to join it with storage_path.
             full_path = source_path
             if not os.path.exists(full_path):
-                # If the path does not exist, attempt to resolve it using the provided storage_path as a fallback.
-                # This handles cases where a relative path might have been passed in the metadata.
                 logger.warning(f"Source path '{full_path}' not found. Attempting to resolve with storage path '{storage_path}'.")
                 full_path = os.path.join(storage_path, os.path.basename(source_path))
                 if not os.path.exists(full_path):
@@ -161,20 +159,44 @@ def chunk_documents(raw_documents, storage_path=PDF_STORAGE_PATH):
             chunks = list(chunker.chunk(dl_doc))
 
             for c in chunks:
-                processed_chunks.append(
-                    LangchainDocument(
-                        page_content=c.text,
-                        metadata={**doc.metadata, "headings": c.meta.headings, "in_memory": false},
+                if classify:
+                    language_model = get_language_model()
+                    classification = classify_chunk(language_model, c.text)
+                    if classification == "General Context":
+                        general_context_chunks.append(
+                            LangchainDocument(
+                                page_content=c.text,
+                                metadata={**doc.metadata, "headings": c.meta.headings, "in_memory": True},
+                            )
+                        )
+                    else:
+                        requirements_chunks.append(
+                            LangchainDocument(
+                                page_content=c.text,
+                                metadata={**doc.metadata, "headings": c.meta.headings, "in_memory": False},
+                            )
+                        )
+                else:
+                    all_chunks.append(
+                        LangchainDocument(
+                            page_content=c.text,
+                            metadata={**doc.metadata, "headings": c.meta.headings, "in_memory": False},
+                        )
                     )
-                )
 
-        logger.info(f"Docling hybrid chunking complete: {len(processed_chunks)} chunks created.")
-        return processed_chunks
+        if classify:
+            logger.info(f"Docling hybrid chunking and classification complete.")
+            logger.info(f"  - General Context chunks: {len(general_context_chunks)}")
+            logger.info(f"  - Requirements chunks: {len(requirements_chunks)}")
+        else:
+            logger.info(f"Docling hybrid chunking complete: {len(all_chunks)} chunks created.")
+
+        return general_context_chunks, requirements_chunks, all_chunks
 
     except Exception as e:
         logger.exception(f"An error occurred during hybrid chunking using Docling. Details: {e}")
         st.error("An error occurred during hybrid chunking using Docling. Check logs for details.")
-        return []
+        return [], [], []
 
 def index_documents(document_chunks, vector_db=None):
     if not document_chunks:

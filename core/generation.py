@@ -4,6 +4,7 @@ from .config import (
     PROMPT_TEMPLATE,
     SUMMARIZATION_PROMPT_TEMPLATE,
     KEYWORD_EXTRACTION_PROMPT_TEMPLATE,
+    CHUNK_CLASSIFICATION_PROMPT_TEMPLATE,
 )
 from .logger_config import get_logger
 
@@ -104,6 +105,47 @@ def generate_summary(language_model, full_document_text):
             f"An error occurred while generating the document summary using the AI model. Details: {e}"
         )
         return f"{user_message} Please try again later. (Details: {e})"
+
+
+def classify_chunk(language_model, chunk_text):
+    """
+    Classifies a text chunk as 'General Context' or 'Requirements'.
+    """
+    if not chunk_text or not chunk_text.strip():
+        logger.warning("classify_chunk called with empty chunk_text.")
+        return "Requirements"  # Default classification
+
+    logger.debug(f"Classifying chunk: '{chunk_text[:50]}...'")
+    try:
+        classification_prompt = ChatPromptTemplate.from_template(
+            CHUNK_CLASSIFICATION_PROMPT_TEMPLATE
+        )
+        classification_chain = classification_prompt | language_model
+        response = classification_chain.invoke({"chunk_text": chunk_text})
+
+        if not response or not response.strip():
+            logger.warning("AI model returned an empty response for chunk classification.")
+            return "Requirements"  # Default classification
+
+        #The model's output might have newlines or extra spaces.
+        cleaned_response = response.strip()
+
+        if "General Context" in cleaned_response:
+            logger.info("Chunk classified as General Context.")
+            return "General Context"
+        elif "Requirements" in cleaned_response:
+            logger.info("Chunk classified as Requirements.")
+            return "Requirements"
+        else:
+            logger.warning(
+                f"Unexpected response from AI model during chunk classification: '{cleaned_response}'"
+            )
+            return "Requirements"  # Default to 'Requirements'
+
+    except Exception as e:
+        logger.exception(f"Error during chunk classification: {e}")
+        # In case of an error, default to 'Requirements' to be safe.
+        return "Requirements"
 
 
 def generate_keywords(language_model, full_document_text):

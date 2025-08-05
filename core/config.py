@@ -49,11 +49,58 @@ Document:
 Keywords:
 """
 
+CHUNK_CLASSIFICATION_PROMPT_TEMPLATE = """
+You are an expert document analyst. Classify the following text chunk into one of two categories:
+1.  **General Context**: Portions of a document that provide broad, high-level information. This includes introductions, overviews, and background information that help a reader understand the overall context of the document, but do not contain specific, detailed requirements.
+2.  **Requirements**: Portions of a document that contain specific, detailed requirements, specifications, or instructions. These are the granular details of a project, system, or process.
+
+I will provide below an example of both classes to get a better understanding of the required task. 
+
+An example of the "General Context" class is:
+
+"Introduction:
+This document specifies the technical system requirements for the All-Terrain Military Hybrid Vehicle (ATMHV), translating user needs (as defined in the URS) into detailed, implementable, and verifiable system requirements. The A-Spec outlines functional, performance, interface, design, safety, and verification criteria to guide system development, integration, and testing.
+System Overview:
+The ATMHV is an 8-passenger hybrid-powered vehicle designed for military operations across challenging terrains including deserts, forests, swamps, and snow. The vehicle provides off-road mobility, tactical communication capabilities, protection against threats, and logistics support. It must operate reliably across extreme environmental conditions.
+"
+
+An example of the "Requirements" class is:
+
+"       SS_TO_SR-SOI_SYS_REQ-1
+Maximum Speed Limitation #1
+The system shall support maximum speed limitation #1 as per mission profile and design objectives. 
+Verification Method(s): Analysis
+       SS_TO_SR-SOI_SYS_REQ-2
+Environmental Operating Range #2
+The system shall support environmental operating range #2 as per mission profile and design objectives. 
+Verification Method(s): Inspection
+       SS_TO_SR-SOI_SYS_REQ-3
+Minimum Range Capability #3
+The system shall support minimum range capability #3 as per mission profile and design objectives. 
+Verification Method(s): Demonstration
+       SS_TO_SR-SOI_SYS_REQ-4
+Dual-Mode Powertrain #4
+The system shall support dual-mode powertrain #4 as per mission profile and design objectives. 
+Verification Method(s): Test
+       SS_TO_SR-SOI_SYS_REQ-5
+Dynamic Power Mode Switching #5
+The system shall support dynamic power mode switching #5 as per mission profile and design objectives. 
+Verification Method(s): Test
+"
+Analyze the text chunk provided below and determine which category it belongs to.
+Your response should be a single word: either "General Context" or "Requirements".
+
+Text Chunk:
+{chunk_text}
+
+Classification:
+"""
+
 # Model Names
 OLLAMA_EMBEDDING_MODEL_NAME = os.getenv(
-    "OLLAMA_EMBEDDING_MODEL_NAME", "llama3.3:latest"
+    "OLLAMA_EMBEDDING_MODEL_NAME", "mistral:7b"
 )
-OLLAMA_LLM_NAME = os.getenv("OLLAMA_LLM_NAME", "llama3.3:latest")
+OLLAMA_LLM_NAME = os.getenv("OLLAMA_LLM_NAME", "mistral:7b")
 RERANKER_MODEL_NAME = os.getenv(
     "RERANKER_MODEL_NAME", "cross-encoder/ms-marco-MiniLM-L-6-v2"
 )
