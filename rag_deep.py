@@ -31,7 +31,7 @@ from core.document_processing import (
     chunk_documents,
     index_documents,
 )
-from core.search_pipeline import get_all_documents
+from core.search_pipeline import get_persistent_context, get_requirements_chunks
 from core.generation import generate_answer, generate_summary, generate_keywords
 from core.session_manager import (
     initialize_session_state,
@@ -418,27 +418,41 @@ if st.session_state.document_processed:
                 formatted_history = "\n".join(history_lines)
                 logger.debug(f"Formatted history for prompt: {formatted_history}")
 
-                final_context_docs = get_all_documents(
-                    document_vector_db=st.session_state.DOCUMENT_VECTOR_DB,
+                persistent_context = get_persistent_context(
                     context_vector_db=st.session_state.CONTEXT_VECTOR_DB,
                     general_context_chunks=st.session_state.get("general_context_chunks", []),
                 )
 
-                if not final_context_docs:
-                    logger.warning("No documents found in any vector store.")
-                    ai_response = "No documents have been processed yet. Please upload a document to begin."
+                requirements_chunks = get_requirements_chunks(
+                    document_vector_db=st.session_state.DOCUMENT_VECTOR_DB,
+                )
+
+                if not requirements_chunks:
+                    logger.warning("No requirements chunks found to process.")
+                    ai_response = "No requirements chunks were found in the uploaded documents. Please check the documents or upload new ones."
                 else:
-                    logger.debug("Generating answer with all available documents.")
-                    persistent_memory_str = "\n".join(
-                        [f"{msg['role']}: {msg['content']}" for msg in st.session_state.memory]
-                    )
-                    ai_response = generate_answer(
-                        LANGUAGE_MODEL,
-                        user_query=user_input,
-                        context_documents=final_context_docs,
-                        conversation_history=formatted_history,
-                        persistent_memory=persistent_memory_str,
-                    )
+                    all_responses = []
+                    for i, req_chunk in enumerate(requirements_chunks):
+                        st.spinner(f"Processing requirement {i+1}/{len(requirements_chunks)}...")
+                        logger.debug(f"Processing requirement chunk {i+1}/{len(requirements_chunks)}")
+
+                        # Combine persistent context with the current requirement chunk
+                        combined_context = persistent_context + [req_chunk]
+
+                        persistent_memory_str = "\n".join(
+                            [f"{msg['role']}: {msg['content']}" for msg in st.session_state.memory]
+                        )
+
+                        response = generate_answer(
+                            LANGUAGE_MODEL,
+                            user_query=user_input,
+                            context_documents=combined_context,
+                            conversation_history=formatted_history,
+                            persistent_memory=persistent_memory_str,
+                        )
+                        all_responses.append(response)
+
+                    ai_response = "\n\n---\n\n".join(all_responses)
 
             logger.info(
                 f"AI Response: {ai_response[:100]}..."
