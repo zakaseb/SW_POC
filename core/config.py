@@ -12,9 +12,11 @@ FINAL_TOP_N_FOR_CONTEXT = 15  # Number of docs reranker should return for LLM co
 
 # Prompt Templates
 PROMPT_TEMPLATE = """
-You are an expert research assistant. Use the provided document context, conversation history, and persistent memory to answer the current query.
-If the query is a follow-up question, use the conversation history to understand the context.
-If unsure, state that you don't know. Be concise and factual (max 3 sentences).
+You are an expert research assistant. Your task is to extract and present requirements from the provided document context.
+Based on the document context, answer the user's query.
+The answer must be based *only* on the information present in the document context. Do not add any information that is not explicitly stated in the context.
+If the context does not contain the answer, state that the information is not available in the document.
+Do not invent new requirements.
 
 Persistent Memory (if any):
 {persistent_memory}
