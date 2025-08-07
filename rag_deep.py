@@ -452,6 +452,7 @@ if st.session_state.document_processed:
                             persistent_memory=persistent_memory_str,
                         )
                         all_responses.append(f"Response for Requirement Chunk {i+1}:\n{response}")
+                        st.session_state.messages = []
 
                     ai_response = "\n\n---\n\n".join(all_responses)
 
