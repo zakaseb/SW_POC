@@ -160,7 +160,7 @@ def chunk_documents(raw_documents, storage_path=PDF_STORAGE_PATH, classify=False
             chunks = list(chunker.chunk(dl_doc))
             logger.info(f"Number of chunks before deduplication: {len(chunks)}")
 
-            for c in chunks:
+            for i, c in enumerate(chunks):
                 chunk_text = c.text.strip()
                 if not chunk_text or chunk_text in processed_chunk_texts:
                     continue
@@ -170,6 +170,10 @@ def chunk_documents(raw_documents, storage_path=PDF_STORAGE_PATH, classify=False
                 if classify:
                     language_model = get_language_model()
                     classification = classify_chunk(language_model, chunk_text)
+                    print(f"--- Chunk {i+1} ---")
+                    print(f"Classification: {classification}")
+                    print(f"Text: {chunk_text}")
+                    print("--------------------")
                     if classification == "General Context":
                         general_context_chunks.append(
                             LangchainDocument(
