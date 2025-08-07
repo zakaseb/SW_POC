@@ -431,6 +431,7 @@ if st.session_state.document_processed:
                     logger.warning("No requirements chunks found to process.")
                     ai_response = "No requirements chunks were found in the uploaded documents. Please check the documents or upload new ones."
                 else:
+                    logger.info(f"Number of requirements chunks to be processed: {len(requirements_chunks)}")
                     all_responses = []
                     for i, req_chunk in enumerate(requirements_chunks):
                         st.spinner(f"Processing requirement {i+1}/{len(requirements_chunks)}...")
@@ -450,7 +451,7 @@ if st.session_state.document_processed:
                             conversation_history=formatted_history,
                             persistent_memory=persistent_memory_str,
                         )
-                        all_responses.append(response)
+                        all_responses.append(f"Response for Requirement Chunk {i+1}:\n{response}")
 
                     ai_response = "\n\n---\n\n".join(all_responses)
 

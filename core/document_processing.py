@@ -158,6 +158,7 @@ def chunk_documents(raw_documents, storage_path=PDF_STORAGE_PATH, classify=False
 
             dl_doc = converter.convert(source=full_path).document
             chunks = list(chunker.chunk(dl_doc))
+            logger.info(f"Number of chunks before deduplication: {len(chunks)}")
 
             for c in chunks:
                 chunk_text = c.text.strip()
@@ -193,6 +194,7 @@ def chunk_documents(raw_documents, storage_path=PDF_STORAGE_PATH, classify=False
 
         if classify:
             logger.info(f"Docling hybrid chunking and classification complete.")
+            logger.info(f"Number of chunks after deduplication: {len(processed_chunk_texts)}")
             logger.info(f"  - General Context chunks: {len(general_context_chunks)}")
             logger.info(f"  - Requirements chunks: {len(requirements_chunks)}")
         else:
