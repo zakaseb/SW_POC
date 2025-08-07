@@ -54,7 +54,7 @@ Keywords:
 CHUNK_CLASSIFICATION_PROMPT_TEMPLATE = """
 You are an expert document analyst. Classify the following text chunk into one of two categories:
 1.  **General Context**: Portions of a document that provide broad, high-level information. This includes introductions, overviews, and background information that help a reader understand the overall context of the document, but do not contain specific, detailed requirements.
-2.  **Requirements**: Portions of a document that contain specific, detailed requirements, specifications, or instructions. These are the granular details of a project, system, or process.
+2.  **Requirements**: Portions of a document that contain specific, detailed, and actionable requirements, specifications, or instructions. These are the granular details of a project, system, or process. A requirement should be a statement that can be verified or tested.
 
 I will provide below an example of both classes to get a better understanding of the required task. 
 

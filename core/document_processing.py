@@ -142,6 +142,7 @@ def chunk_documents(raw_documents, storage_path=PDF_STORAGE_PATH, classify=False
         all_chunks = []
         general_context_chunks = []
         requirements_chunks = []
+        processed_chunk_texts = set()
 
         for doc in raw_documents:
             source_path = doc.metadata.get("source")
@@ -157,8 +158,6 @@ def chunk_documents(raw_documents, storage_path=PDF_STORAGE_PATH, classify=False
 
             dl_doc = converter.convert(source=full_path).document
             chunks = list(chunker.chunk(dl_doc))
-
-            processed_chunk_texts = set()
 
             for c in chunks:
                 chunk_text = c.text.strip()
