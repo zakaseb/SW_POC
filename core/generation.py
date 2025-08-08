@@ -47,6 +47,13 @@ def generate_answer(
         conversation_prompt = ChatPromptTemplate.from_template(PROMPT_TEMPLATE)
         response_chain = conversation_prompt | language_model
 
+        print("--- LLM Request Content ---")
+        print(f"User Query: {user_query}")
+        print(f"Conversation History: {conversation_history}")
+        print(f"Persistent Memory: {persistent_memory}")
+        print(f"Document Context: {context_text}")
+        print("--------------------------")
+
         response = response_chain.invoke(
             {
                 "user_query": user_query,
