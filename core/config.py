@@ -12,23 +12,38 @@ FINAL_TOP_N_FOR_CONTEXT = 15  # Number of docs reranker should return for LLM co
 
 # Prompt Templates
 PROMPT_TEMPLATE = """
-You are an expert research assistant. Your task is to extract and present requirements from the provided document context.
-Based on the document context, answer the user's query.
-The answer must be based *only* on the information present in the document context. Do not add any information that is not explicitly stated in the context.
-If the context does not contain the answer, state that the information is not available in the document.
-Do not invent new requirements.
+You are an expert system engineer specialized in requirement extraction. Your task is to analyze the provided text chunk and extract all the requirements it contains.
+For each requirement found in the text chunk, you must generate a single JSON object that follows the schema below.
+If a chunk contains multiple requirements, generate a list of JSON objects.
+If the chunk contains no requirements, return an empty list [].
+Your response MUST be only the JSON data (a single object or a list of objects) and nothing else. Do not include any prefixes, suffixes, or explanations.
 
-Persistent Memory (if any):
-{persistent_memory}
+JSON Schema:
+{
+  "Name": "string",
+  "Description": "string",
+  "VerificationMethod": "string (e.g., Analysis, Inspection, Demonstration, Test)",
+  "Tags": "list of strings",
+  "RequirementType": "string (e.g., Functional, Constraint)",
+  "DocumentRequirementID": "string"
+}
 
-Conversation History (if any):
-{conversation_history}
+Here is an example of a desired JSON object:
+{
+  "Name": "Dual-Mode HMI",
+  "Description": "The system shall support dual-mode hmi as per mission profile and design objectives.",
+  "VerificationMethod": "Analysis",
+  "Tags": ["TBD"],
+  "RequirementType": "Functional",
+  "DocumentRequirementID": "#177"
+}
 
-Document Context:
+Now, analyze the following text chunk and extract the requirements.
+
+Text Chunk:
 {document_context}
 
-Current Query: {user_query}
-Answer:
+JSON Output:
 """
 
 SUMMARIZATION_PROMPT_TEMPLATE = """

@@ -437,19 +437,14 @@ if st.session_state.document_processed:
                         st.spinner(f"Processing requirement {i+1}/{len(requirements_chunks)}...")
                         logger.debug(f"Processing requirement chunk {i+1}/{len(requirements_chunks)}")
 
-                        # Combine persistent context with the current requirement chunk
-                        combined_context = persistent_context + [req_chunk]
-
-                        persistent_memory_str = "\n".join(
-                            [f"{msg['role']}: {msg['content']}" for msg in st.session_state.memory]
-                        )
+                        # The context for the LLM will be just the single requirement chunk.
 
                         response = generate_answer(
                             LANGUAGE_MODEL,
-                            user_query=user_input,
-                            context_documents=combined_context,
-                            conversation_history="",  # Pass empty history for each iteration
-                            persistent_memory="",  # Pass empty memory for each iteration
+                            user_query=user_input, # The user query is still needed for the function signature, but the prompt will ignore it.
+                            context_documents=[req_chunk], # Pass only the current requirement chunk.
+                            conversation_history="",
+                            persistent_memory="",
                         )
                         all_responses.append(f"Response for Requirement Chunk {i+1}:\n{response}")
 
