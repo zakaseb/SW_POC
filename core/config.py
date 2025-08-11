@@ -19,24 +19,24 @@ If the chunk contains no requirements, return an empty list [].
 Your response MUST be only the JSON data (a single object or a list of objects) and nothing else. Do not include any prefixes, suffixes, or explanations.
 
 JSON Schema:
-{
+{{
   "Name": "string",
   "Description": "string",
   "VerificationMethod": "string (e.g., Analysis, Inspection, Demonstration, Test)",
   "Tags": "list of strings",
   "RequirementType": "string (e.g., Functional, Constraint)",
   "DocumentRequirementID": "string"
-}
+}}
 
 Here is an example of a desired JSON object:
-{
+{{
   "Name": "Dual-Mode HMI",
   "Description": "The system shall support dual-mode hmi as per mission profile and design objectives.",
   "VerificationMethod": "Analysis",
   "Tags": ["TBD"],
   "RequirementType": "Functional",
   "DocumentRequirementID": "#177"
-}
+}}
 
 Now, analyze the following text chunk and extract the requirements.
 
