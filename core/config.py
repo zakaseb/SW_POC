@@ -11,7 +11,25 @@ TOP_K_FOR_RERANKER = 40 #Number of docs from hybrid search to pass to reranker
 FINAL_TOP_N_FOR_CONTEXT = 15  # Number of docs reranker should return for LLM context
 
 # Prompt Templates
-PROMPT_TEMPLATE = """
+GENERAL_QA_PROMPT_TEMPLATE = """
+You are an expert research assistant. Use the provided document context, conversation history, and persistent memory to answer the current query.
+If the query is a follow-up question, use the conversation history to understand the context.
+If unsure, state that you don't know. Be concise and factual.
+
+Persistent Memory (if any):
+{persistent_memory}
+
+Conversation History (if any):
+{conversation_history}
+
+Document Context:
+{document_context}
+
+Current Query: {user_query}
+Answer:
+"""
+
+REQUIREMENT_JSON_PROMPT_TEMPLATE = """
 You are an expert system engineer specialized in requirement extraction. Your task is to analyze the provided text chunk and extract all the requirements it contains.
 For each requirement found in the text chunk, you must generate a single JSON object that follows the schema below.
 If a chunk contains multiple requirements, generate a list of JSON objects.

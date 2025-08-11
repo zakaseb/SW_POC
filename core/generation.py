@@ -1,7 +1,8 @@
 import streamlit as st
 from langchain_core.prompts import ChatPromptTemplate
 from .config import (
-    PROMPT_TEMPLATE,
+    GENERAL_QA_PROMPT_TEMPLATE,
+    REQUIREMENT_JSON_PROMPT_TEMPLATE,
     SUMMARIZATION_PROMPT_TEMPLATE,
     KEYWORD_EXTRACTION_PROMPT_TEMPLATE,
     CHUNK_CLASSIFICATION_PROMPT_TEMPLATE,
@@ -23,14 +24,9 @@ def generate_answer(
     """
     if not user_query or not user_query.strip():
         logger.warning("generate_answer called with empty user_query.")
-        # User-facing warning is handled by returning the string, which rag_deep.py will show.
         return "Your question is empty. Please type a question to get an answer."
 
-    if (
-        not context_documents
-        or not isinstance(context_documents, list)
-        or len(context_documents) == 0
-    ):
+    if not context_documents or not isinstance(context_documents, list) or len(context_documents) == 0:
         logger.warning("generate_answer called with no context documents.")
         return "I couldn't find relevant information in the document to answer your query. Please try rephrasing your question or ensure the document contains the relevant topics."
 
@@ -38,21 +34,12 @@ def generate_answer(
     try:
         context_text = "\n\n".join([doc.page_content for doc in context_documents])
         if not context_text.strip():
-            logger.warning(
-                "Context text for answer generation is empty after joining docs."
-            )
+            logger.warning("Context text for answer generation is empty after joining docs.")
             return "The relevant sections found in the document appear to be empty. Cannot generate an answer."
 
         logger.debug(f"Context for prompt: {context_text[:100]}...")
-        conversation_prompt = ChatPromptTemplate.from_template(PROMPT_TEMPLATE)
+        conversation_prompt = ChatPromptTemplate.from_template(GENERAL_QA_PROMPT_TEMPLATE)
         response_chain = conversation_prompt | language_model
-
-        print("--- LLM Request Content ---")
-        print(f"User Query: {user_query}")
-        print(f"Conversation History: {conversation_history}")
-        print(f"Persistent Memory: {persistent_memory}")
-        print(f"Document Context: {context_text}")
-        print("--------------------------")
 
         response = response_chain.invoke(
             {
@@ -65,21 +52,40 @@ def generate_answer(
 
         if not response or not response.strip():
             logger.warning("AI model returned an empty response for answer generation.")
-            st.warning(
-                "The AI model returned an empty response. Please try rephrasing your question or try again later."
-            )  # User feedback
-            return "The AI model returned an empty response. Please try rephrasing your question or try again later."  # Also return for main script
+            return "The AI model returned an empty response. Please try rephrasing your question or try again later."
         logger.info("Answer generated successfully.")
         return response
     except Exception as e:
-        user_message = (
-            "I'm sorry, but I encountered an error while trying to generate a response."
-        )
+        user_message = "I'm sorry, but I encountered an error while trying to generate a response."
         logger.exception(f"Error during answer generation: {e}")
-        st.error(
-            f"An error occurred while generating the answer using the AI model. Details: {e}"
-        )  # Keep for user if they see it via direct call
         return f"{user_message} Please try again later or rephrase your question. (Details: {e})"
+
+
+def generate_requirements_json(language_model, requirement_chunk):
+    """
+    Generates a JSON object for a single requirement chunk.
+    """
+    logger.info("Generating requirements JSON...")
+    try:
+        context_text = requirement_chunk.page_content
+        if not context_text.strip():
+            logger.warning("generate_requirements_json called with empty chunk text.")
+            return "{}"
+
+        prompt = ChatPromptTemplate.from_template(REQUIREMENT_JSON_PROMPT_TEMPLATE)
+        response_chain = prompt | language_model
+
+        response = response_chain.invoke({"document_context": context_text})
+
+        if not response or not response.strip():
+            logger.warning("AI model returned an empty response for requirements JSON generation.")
+            return "{}"
+        logger.info("Requirements JSON generated successfully.")
+        return response
+    except Exception as e:
+        user_message = "I'm sorry, but I encountered an error while trying to generate the requirements JSON."
+        logger.exception(f"Error during requirements JSON generation: {e}")
+        return f"{{ 'error': '{user_message}', 'details': '{e}' }}"
 
 
 def generate_summary(language_model, full_document_text):

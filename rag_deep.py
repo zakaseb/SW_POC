@@ -32,7 +32,7 @@ from core.document_processing import (
     index_documents,
 )
 from core.search_pipeline import get_persistent_context, get_requirements_chunks
-from core.generation import generate_answer, generate_summary, generate_keywords
+from core.generation import generate_answer, generate_summary, generate_keywords, generate_requirements_json
 from core.session_manager import (
     initialize_session_state,
     reset_document_states,
@@ -175,35 +175,22 @@ with st.sidebar:
         st.rerun()
 
     if st.session_state.document_processed:
-        if st.button("Summarize Uploaded Content", key="summarize_content_button"):
-            if st.session_state.raw_documents:
-                with st.spinner(
-                    "Generating summary for all documents... This might take a few moments."
-                ):
-                    full_text = "\n\n".join(
-                        [doc.page_content for doc in st.session_state.raw_documents]
-                    )
-                    if not full_text.strip():
-                        st.sidebar.warning(
-                            "Cannot generate summary: Combined content of documents is effectively empty."
-                        )
-                        logger.warning(
-                            "Summarization attempt on empty combined content."
-                        )
-                        st.session_state.document_summary = None
-                    else:
-                        logger.info("Generating combined content summary.")
-                        summary_text = generate_summary(LANGUAGE_MODEL, full_text)
-                        st.session_state.document_summary = summary_text
-                        if "Failed to generate summary" in (summary_text or ""):
-                            logger.error(f"Summary generation failed: {summary_text}")
-                        else:
-                            logger.info("Summary generated successfully.")
-            else:
-                st.sidebar.error(
-                    "Cannot generate summary: Document content not loaded or available."
+        if st.button("Generate Requirements", key="generate_requirements_button"):
+            with st.spinner("Generating requirements... This might take a moment."):
+                requirements_chunks = get_requirements_chunks(
+                    document_vector_db=st.session_state.DOCUMENT_VECTOR_DB,
                 )
-                logger.warning("Summarization attempt with no raw documents loaded.")
+                if not requirements_chunks:
+                    st.sidebar.warning("No requirements chunks found to process.")
+                else:
+                    all_requirements = []
+                    for req_chunk in requirements_chunks:
+                        json_response = generate_requirements_json(
+                            LANGUAGE_MODEL, req_chunk
+                        )
+                        all_requirements.append(json_response)
+                    st.session_state.generated_requirements = all_requirements
+                    st.sidebar.success("Requirements generated successfully!")
 
         if st.button(
             "Extract Keywords from Content", key="extract_keywords_content_button"
@@ -237,13 +224,14 @@ with st.sidebar:
                     "Keyword extraction attempt with no raw documents loaded."
                 )
 
-    if (
-        st.session_state.document_summary
-        and "Failed to generate summary" not in st.session_state.document_summary
-    ):
+    if st.session_state.get("generated_requirements"):
         st.sidebar.markdown("---")
-        st.sidebar.subheader("📄 Combined Content Summary")
-        st.sidebar.info(st.session_state.document_summary)
+        st.sidebar.subheader("Generated Requirements")
+        # Display each requirement in a separate text area
+        for i, req in enumerate(st.session_state.generated_requirements):
+            st.sidebar.text_area(
+                f"Requirement {i+1}", value=req, height=200, disabled=True
+            )
 
     if (
         st.session_state.document_keywords
@@ -418,37 +406,31 @@ if st.session_state.document_processed:
                 formatted_history = "\n".join(history_lines)
                 logger.debug(f"Formatted history for prompt: {formatted_history}")
 
+                # Get all chunks for context
                 persistent_context = get_persistent_context(
                     context_vector_db=st.session_state.CONTEXT_VECTOR_DB,
                     general_context_chunks=st.session_state.get("general_context_chunks", []),
                 )
-
                 requirements_chunks = get_requirements_chunks(
                     document_vector_db=st.session_state.DOCUMENT_VECTOR_DB,
                 )
+                all_context_docs = persistent_context + requirements_chunks
 
-                if not requirements_chunks:
-                    logger.warning("No requirements chunks found to process.")
-                    ai_response = "No requirements chunks were found in the uploaded documents. Please check the documents or upload new ones."
+                if not all_context_docs:
+                    logger.warning("No documents found in any vector store.")
+                    ai_response = "No documents have been processed yet. Please upload a document to begin."
                 else:
-                    logger.info(f"Number of requirements chunks to be processed: {len(requirements_chunks)}")
-                    all_responses = []
-                    for i, req_chunk in enumerate(requirements_chunks):
-                        st.spinner(f"Processing requirement {i+1}/{len(requirements_chunks)}...")
-                        logger.debug(f"Processing requirement chunk {i+1}/{len(requirements_chunks)}")
-
-                        # The context for the LLM will be just the single requirement chunk.
-
-                        response = generate_answer(
-                            LANGUAGE_MODEL,
-                            user_query=user_input, # The user query is still needed for the function signature, but the prompt will ignore it.
-                            context_documents=[req_chunk], # Pass only the current requirement chunk.
-                            conversation_history="",
-                            persistent_memory="",
-                        )
-                        all_responses.append(f"Response for Requirement Chunk {i+1}:\n{response}")
-
-                    ai_response = "\n\n---\n\n".join(all_responses)
+                    logger.debug("Generating answer with all available documents.")
+                    persistent_memory_str = "\n".join(
+                        [f"{msg['role']}: {msg['content']}" for msg in st.session_state.memory]
+                    )
+                    ai_response = generate_answer(
+                        LANGUAGE_MODEL,
+                        user_query=user_input,
+                        context_documents=all_context_docs,
+                        conversation_history=formatted_history,
+                        persistent_memory=persistent_memory_str,
+                    )
 
             logger.info(
                 f"AI Response: {ai_response[:100]}..."
