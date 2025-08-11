@@ -448,11 +448,10 @@ if st.session_state.document_processed:
                             LANGUAGE_MODEL,
                             user_query=user_input,
                             context_documents=combined_context,
-                            conversation_history=formatted_history,
-                            persistent_memory=persistent_memory_str,
+                            conversation_history="",  # Pass empty history for each iteration
+                            persistent_memory="",  # Pass empty memory for each iteration
                         )
                         all_responses.append(f"Response for Requirement Chunk {i+1}:\n{response}")
-                        st.session_state.messages = []
 
                     ai_response = "\n\n---\n\n".join(all_responses)
 
