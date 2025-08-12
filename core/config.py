@@ -56,7 +56,7 @@ Tags: In the case where there is a TBD or TBC in the description, add the tag 'T
    this column for a requirement.
 Requirement Type: Please classify the requirement as one of the following - 'Functional', 
    'Interface' or 'Constraint'
-Document Requirement ID: This should be a alpha-numerical randomised requirement ID of each requirement. 
+Document Requirement ID: This should be the requirement ID of each requirement.
 
 When extracting the requirements, please ensure that the following are adhered to: 
 1. Requirements are verifiable.
