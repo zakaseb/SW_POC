@@ -1,6 +1,10 @@
 import os
 import streamlit as st
 from rank_bm25 import BM25Okapi
+import pandas as pd
+import json
+import io
+import re
 
 # Configure logging first
 from core.logger_config import setup_logging, get_logger
@@ -116,6 +120,68 @@ os.makedirs(PDF_STORAGE_PATH, exist_ok=True)
 logger.info(f"Ensured PDF storage directory exists: {PDF_STORAGE_PATH}")
 
 
+def generate_excel_file(requirements_json_list):
+    """
+    Parses a list of JSON strings, cleans them, and generates an Excel file in memory.
+    """
+    all_requirements = []
+
+    for json_str in requirements_json_list:
+        # Clean the string: remove markdown and other non-JSON artifacts
+        # This regex looks for content between ```json and ``` or just `{` and `}` or `[` and `]`
+        match = re.search(r"```json\s*([\s\S]*?)\s*```|([\s\S]*)", json_str)
+        if match:
+            cleaned_str = match.group(1) if match.group(1) is not None else match.group(2)
+            cleaned_str = cleaned_str.strip()
+
+            try:
+                # Try to parse the cleaned string
+                data = json.loads(cleaned_str)
+                if isinstance(data, list):
+                    all_requirements.extend(data)
+                elif isinstance(data, dict):
+                    all_requirements.append(data)
+            except json.JSONDecodeError:
+                logger.warning(f"Could not decode JSON from string: {cleaned_str}")
+                continue # Skip this string if it's not valid JSON
+
+    if not all_requirements:
+        return None
+
+    # Define the columns based on the JSON schema to ensure order and handle missing keys
+    columns = [
+        "Name",
+        "Description",
+        "VerificationMethod",
+        "Tags",
+        "RequirementType",
+        "DocumentRequirementID"
+    ]
+
+    # Create a DataFrame
+    df = pd.DataFrame(all_requirements)
+
+    # Ensure all columns are present, fill missing ones with empty strings
+    for col in columns:
+        if col not in df.columns:
+            df[col] = ''
+
+    # Reorder columns to match the desired schema and select only them
+    df = df[columns]
+
+    # Convert list-like columns (e.g., Tags) to a string representation
+    if 'Tags' in df.columns:
+        df['Tags'] = df['Tags'].apply(lambda x: ', '.join(x) if isinstance(x, list) else x)
+
+    # Create an in-memory Excel file
+    output = io.BytesIO()
+    with pd.ExcelWriter(output, engine='openpyxl') as writer:
+        df.to_excel(writer, index=False, sheet_name='Requirements')
+
+    processed_data = output.getvalue()
+    return processed_data
+
+
 # ---------------------------------
 # User Interface
 # ---------------------------------
@@ -177,6 +243,8 @@ with st.sidebar:
     if st.session_state.document_processed:
         if st.button("Generate Requirements", key="generate_requirements_button"):
             with st.spinner("Generating requirements... This might take a moment."):
+                st.session_state.generated_requirements = None
+                st.session_state.excel_file = None
                 requirements_chunks = get_requirements_chunks(
                     document_vector_db=st.session_state.DOCUMENT_VECTOR_DB,
                 )
@@ -190,7 +258,13 @@ with st.sidebar:
                         )
                         all_requirements.append(json_response)
                     st.session_state.generated_requirements = all_requirements
-                    st.sidebar.success("Requirements generated successfully!")
+
+                    excel_data = generate_excel_file(all_requirements)
+                    if excel_data:
+                        st.session_state.excel_file = excel_data
+                        st.sidebar.success("Requirements generated and Excel file is ready for download!")
+                    else:
+                        st.sidebar.warning("Requirements generated, but no valid data was found to create an Excel file.")
 
         if st.button(
             "Extract Keywords from Content", key="extract_keywords_content_button"
@@ -231,6 +305,15 @@ with st.sidebar:
         for i, req in enumerate(st.session_state.generated_requirements):
             st.sidebar.text_area(
                 f"Requirement {i+1}", value=req, height=200, disabled=True
+            )
+
+        if st.session_state.get("excel_file"):
+            st.sidebar.download_button(
+                label="Download Requirements as Excel",
+                data=st.session_state.excel_file,
+                file_name="generated_requirements.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                key="download_excel_button"
             )
 
     if (
