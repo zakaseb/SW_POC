@@ -12,7 +12,7 @@ FINAL_TOP_N_FOR_CONTEXT = 15  # Number of docs reranker should return for LLM co
 
 # Prompt Templates
 GENERAL_QA_PROMPT_TEMPLATE = """
-You are an expert research assistant. Use the provided document context, conversation history, and persistent memory to answer the current query.
+You are an expert research assistant in Systems Engineering. Use the provided document context, conversation history, and persistent memory to answer the current query.
 If the query is a follow-up question, use the conversation history to understand the context.
 If unsure, state that you don't know. Be concise and factual.
 
@@ -45,6 +45,30 @@ JSON Schema:
   "RequirementType": "string (e.g., Functional, Constraint)",
   "DocumentRequirementID": "string"
 }}
+whereby:
+
+Name: The name of the requirement
+Description: The requirement description
+Verification Method: This should be 'Test', 'Inspection' or 'Analysis'. The verification 
+   method of each requirement can be identified in table 4-4, where the requirement ID can 
+   be mapped to a verification method
+Tags: In the case where there is a TBD or TBC in the description, add the tag 'TBD' in 
+   this column for a requirement.
+Requirement Type: Please classify the requirement as one of the following - 'Functional', 
+   'Interface' or 'Constraint'
+Document Requirement ID: This should be the requirement ID of each requirement. 
+
+When extracting the requirements, please ensure that the following are adhered to: 
+1. Requirements are verifiable.
+2. Requirements are autonomous.
+3. Requirements are unambiguous.
+4. Requirements are concise.
+
+In the case where requirements are not meeting the above, please mark them in the 'Tags' 
+column as 'Updated' by adding the word 'Updated' in the Tags column (note: if there is a 
+TBD in the column, then separate them with a comma). Please update the description to adhere 
+to these requirements for the requirements quality. Feel free to split requirements into 
+multiple requirements if so required.
 
 Here is an example of a desired JSON object:
 {{
