@@ -188,8 +188,17 @@ def get_excel_download_link(excel_data):
     Generates a link to download the given excel data.
     """
     b64 = base64.b64encode(excel_data).decode()
-    href = f'<a href="data:application/octet-stream;base64,{b64}" download="generated_requirements.xlsx" id="downloadLink" style="display:none"></a>'
-    script = '<script>document.getElementById("downloadLink").click()</script>'
+    href = f'<a href="data:application/octet-stream;base64,{b64}" download="generated_requirements.xlsx" id="downloadLink" style="display:none">Download Excel</a>'
+    script = """
+    <script>
+        window.setTimeout(function() {
+            var link = document.getElementById('downloadLink');
+            if (link) {
+                link.click();
+            }
+        }, 200);
+    </script>
+    """
     return href + script
 
 
@@ -462,7 +471,7 @@ if st.session_state.get("uploaded_filenames") and st.session_state.get(
 
 # Check if a download should be triggered
 if "download_trigger" in st.session_state and st.session_state.download_trigger:
-    st.markdown(st.session_state.download_trigger, unsafe_allow_html=True)
+    st.components.v1.html(st.session_state.download_trigger, height=0)
     st.session_state.download_trigger = None # Clear the trigger
 
 for message in st.session_state.messages:
