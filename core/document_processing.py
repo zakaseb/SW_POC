@@ -142,6 +142,7 @@ def chunk_documents(raw_documents, storage_path=PDF_STORAGE_PATH, classify=False
         all_chunks = []
         general_context_chunks = []
         requirements_chunks = []
+        processed_chunk_texts = set()
 
         for doc in raw_documents:
             source_path = doc.metadata.get("source")
@@ -157,35 +158,47 @@ def chunk_documents(raw_documents, storage_path=PDF_STORAGE_PATH, classify=False
 
             dl_doc = converter.convert(source=full_path).document
             chunks = list(chunker.chunk(dl_doc))
+            logger.info(f"Number of chunks before deduplication: {len(chunks)}")
 
-            for c in chunks:
+            for i, c in enumerate(chunks):
+                chunk_text = c.text.strip()
+                if not chunk_text or chunk_text in processed_chunk_texts:
+                    continue
+
+                processed_chunk_texts.add(chunk_text)
+
                 if classify:
                     language_model = get_language_model()
-                    classification = classify_chunk(language_model, c.text)
+                    classification = classify_chunk(language_model, chunk_text)
+                    print(f"--- Chunk {i+1} ---")
+                    print(f"Classification: {classification}")
+                    print(f"Text: {chunk_text}")
+                    print("--------------------")
                     if classification == "General Context":
                         general_context_chunks.append(
                             LangchainDocument(
-                                page_content=c.text,
+                                page_content=chunk_text,
                                 metadata={**doc.metadata, "headings": c.meta.headings, "in_memory": True},
                             )
                         )
                     else:
                         requirements_chunks.append(
                             LangchainDocument(
-                                page_content=c.text,
+                                page_content=chunk_text,
                                 metadata={**doc.metadata, "headings": c.meta.headings, "in_memory": False},
                             )
                         )
                 else:
                     all_chunks.append(
                         LangchainDocument(
-                            page_content=c.text,
+                            page_content=chunk_text,
                             metadata={**doc.metadata, "headings": c.meta.headings, "in_memory": False},
                         )
                     )
 
         if classify:
             logger.info(f"Docling hybrid chunking and classification complete.")
+            logger.info(f"Number of chunks after deduplication: {len(processed_chunk_texts)}")
             logger.info(f"  - General Context chunks: {len(general_context_chunks)}")
             logger.info(f"  - Requirements chunks: {len(requirements_chunks)}")
         else:

@@ -11,10 +11,10 @@ TOP_K_FOR_RERANKER = 40 #Number of docs from hybrid search to pass to reranker
 FINAL_TOP_N_FOR_CONTEXT = 15  # Number of docs reranker should return for LLM context
 
 # Prompt Templates
-PROMPT_TEMPLATE = """
-You are an expert research assistant. Use the provided document context, conversation history, and persistent memory to answer the current query.
+GENERAL_QA_PROMPT_TEMPLATE = """
+You are an expert research assistant in Systems Engineering. Use the provided document context, conversation history, and persistent memory to answer the current query.
 If the query is a follow-up question, use the conversation history to understand the context.
-If unsure, state that you don't know. Be concise and factual (max 3 sentences).
+If unsure, state that you don't know. Be concise and factual.
 
 Persistent Memory (if any):
 {persistent_memory}
@@ -27,6 +27,65 @@ Document Context:
 
 Current Query: {user_query}
 Answer:
+"""
+
+REQUIREMENT_JSON_PROMPT_TEMPLATE = """
+You are an expert system engineer specialized in requirement extraction. Your task is to analyze the provided text chunk and extract all the requirements it contains.
+For each requirement found in the text chunk, you must generate a single JSON object that follows the schema below.
+If a chunk contains multiple requirements, generate a list of JSON objects.
+If the chunk contains no requirements, return an empty list [].
+Your response MUST be only the JSON data (a single object or a list of objects) and nothing else. Do not include any prefixes, suffixes, or explanations.
+
+JSON Schema:
+{{
+  "Name": "string",
+  "Description": "string",
+  "VerificationMethod": "string (e.g., Analysis, Inspection, Demonstration, Test)",
+  "Tags": "list of strings",
+  "RequirementType": "string (e.g., Functional, Constraint)",
+  "DocumentRequirementID": "string"
+}}
+whereby:
+
+Name: The name of the requirement
+Description: The requirement description
+Verification Method: This should be 'Test', 'Inspection' or 'Analysis'. The verification 
+   method of each requirement can be identified in table 4-4, where the requirement ID can 
+   be mapped to a verification method
+Tags: In the case where there is a TBD or TBC in the description, add the tag 'TBD' in 
+   this column for a requirement.
+Requirement Type: Please classify the requirement as one of the following - 'Functional', 
+   'Interface' or 'Constraint'
+Document Requirement ID: This should be the requirement ID of each requirement. 
+
+When extracting the requirements, please ensure that the following are adhered to: 
+1. Requirements are verifiable.
+2. Requirements are autonomous.
+3. Requirements are unambiguous.
+4. Requirements are concise.
+
+In the case where requirements are not meeting the above, please mark them in the 'Tags' 
+column as 'Updated' by adding the word 'Updated' in the Tags column (note: if there is a 
+TBD in the column, then separate them with a comma). Please update the description to adhere 
+to these requirements for the requirements quality. Feel free to split requirements into 
+multiple requirements if so required.
+
+Here is an example of a desired JSON object:
+{{
+  "Name": "Dual-Mode HMI",
+  "Description": "The system shall support dual-mode hmi as per mission profile and design objectives.",
+  "VerificationMethod": "Analysis",
+  "Tags": ["TBD"],
+  "RequirementType": "Functional",
+  "DocumentRequirementID": "#177"
+}}
+
+Now, analyze the following text chunk and extract the requirements.
+
+Text Chunk:
+{document_context}
+
+JSON Output:
 """
 
 SUMMARIZATION_PROMPT_TEMPLATE = """
@@ -52,7 +111,7 @@ Keywords:
 CHUNK_CLASSIFICATION_PROMPT_TEMPLATE = """
 You are an expert document analyst. Classify the following text chunk into one of two categories:
 1.  **General Context**: Portions of a document that provide broad, high-level information. This includes introductions, overviews, and background information that help a reader understand the overall context of the document, but do not contain specific, detailed requirements.
-2.  **Requirements**: Portions of a document that contain specific, detailed requirements, specifications, or instructions. These are the granular details of a project, system, or process.
+2.  **Requirements**: Portions of a document that contain specific, detailed, and actionable requirements, specifications, or instructions. These are the granular details of a project, system, or process. A requirement should be a statement that can be verified or tested.
 
 I will provide below an example of both classes to get a better understanding of the required task. 
 
