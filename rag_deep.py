@@ -5,6 +5,7 @@ import pandas as pd
 import json
 import io
 import re
+import base64
 
 # Configure logging first
 from core.logger_config import setup_logging, get_logger
@@ -182,6 +183,25 @@ def generate_excel_file(requirements_json_list):
     return processed_data
 
 
+def get_excel_download_link(excel_data):
+    """
+    Generates a link to download the given excel data.
+    """
+    b64 = base64.b64encode(excel_data).decode()
+    href = f'<a href="data:application/octet-stream;base64,{b64}" download="generated_requirements.xlsx" id="downloadLink" style="display:none">Download Excel</a>'
+    script = """
+    <script>
+        window.setTimeout(function() {
+            var link = document.getElementById('downloadLink');
+            if (link) {
+                link.click();
+            }
+        }, 200);
+    </script>
+    """
+    return href + script
+
+
 # ---------------------------------
 # User Interface
 # ---------------------------------
@@ -261,8 +281,9 @@ with st.sidebar:
 
                     excel_data = generate_excel_file(all_requirements)
                     if excel_data:
-                        st.session_state.excel_file = excel_data
-                        st.sidebar.success("Requirements generated and Excel file is ready for download!")
+                        download_link = get_excel_download_link(excel_data)
+                        st.session_state.download_trigger = download_link
+                        st.sidebar.success("Requirements generated and Excel file is downloading!")
                     else:
                         st.sidebar.warning("Requirements generated, but no valid data was found to create an Excel file.")
 
@@ -308,13 +329,8 @@ with st.sidebar:
             )
 
         if st.session_state.get("excel_file"):
-            st.sidebar.download_button(
-                label="Download Requirements as Excel",
-                data=st.session_state.excel_file,
-                file_name="generated_requirements.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                key="download_excel_button"
-            )
+            # The download will now be triggered automatically.
+            pass
 
     if (
         st.session_state.document_keywords
@@ -452,6 +468,11 @@ if st.session_state.get("uploaded_filenames") and st.session_state.get(
     for name in st.session_state.uploaded_filenames:
         st.markdown(f"- _{name}_")
     st.markdown("---")
+
+# Check if a download should be triggered
+if "download_trigger" in st.session_state and st.session_state.download_trigger:
+    st.components.v1.html(st.session_state.download_trigger, height=0)
+    st.session_state.download_trigger = None # Clear the trigger
 
 for message in st.session_state.messages:
     with st.chat_message(message["role"], avatar=message.get("avatar")):
