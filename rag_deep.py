@@ -271,10 +271,18 @@ with st.sidebar:
                 if not requirements_chunks:
                     st.sidebar.warning("No requirements chunks found to process.")
                 else:
+                    # Get the combined persistent and general context to be used for all requirement generations
+                    common_context_docs = get_persistent_context(
+                        context_vector_db=st.session_state.CONTEXT_VECTOR_DB,
+                        general_context_chunks=st.session_state.get("general_context_chunks", []),
+                    )
+
                     all_requirements = []
                     for req_chunk in requirements_chunks:
                         json_response = generate_requirements_json(
-                            LANGUAGE_MODEL, req_chunk
+                            LANGUAGE_MODEL,
+                            req_chunk,
+                            context_documents=common_context_docs,
                         )
                         all_requirements.append(json_response)
                     st.session_state.generated_requirements = all_requirements
@@ -410,13 +418,11 @@ if uploaded_files:
                     st.success(f"Document chunking and classification complete. Found {len(general_context_chunks)} general context chunks and {len(requirements_chunks)} requirements chunks.")
                     logger.info(f"{total_chunks} total chunks created.")
 
-                    # Index general context chunks into the context vector DB
+                    # Store general context chunks in session state, but do not index into the persistent context vector DB
                     if general_context_chunks:
                         st.session_state.general_context_chunks = general_context_chunks
-                        logger.debug("Starting indexing of general context chunks.")
-                        index_documents(general_context_chunks, vector_db=st.session_state.CONTEXT_VECTOR_DB)
-                        logger.info(f"{len(general_context_chunks)} general context chunks indexed.")
-                        st.info(f"ℹ️ {len(general_context_chunks)} chunks have been added to the session's persistent memory.")
+                        logger.info(f"{len(general_context_chunks)} general context chunks stored in session state.")
+                        st.info(f"ℹ️ {len(general_context_chunks)} general context chunks will be used for this session.")
 
                     # Index requirements chunks into the main document vector DB
                     if requirements_chunks:

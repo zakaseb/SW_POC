@@ -61,21 +61,40 @@ def generate_answer(
         return f"{user_message} Please try again later or rephrase your question. (Details: {e})"
 
 
-def generate_requirements_json(language_model, requirement_chunk):
+def generate_requirements_json(language_model, requirement_chunk, context_documents=None):
     """
-    Generates a JSON object for a single requirement chunk.
+    Generates a JSON object for a single requirement chunk, using additional context.
     """
     logger.info("Generating requirements JSON...")
     try:
-        context_text = requirement_chunk.page_content
-        if not context_text.strip():
+        requirement_text = requirement_chunk.page_content
+        if not requirement_text.strip():
             logger.warning("generate_requirements_json called with empty chunk text.")
             return "{}"
+
+        # Combine the context documents into a single string for the prompt
+        full_context_text = ""
+        if context_documents:
+            full_context_text = "\n\n".join([doc.page_content for doc in context_documents])
+
+        # Structure the context for the prompt, clearly separating the reference context
+        # from the specific requirement chunk to be processed.
+        prompt_context = f"""
+**Full Document Context (for reference):**
+---
+{full_context_text}
+---
+
+**Requirement Chunk to be converted to JSON:**
+---
+{requirement_text}
+---
+"""
 
         prompt = ChatPromptTemplate.from_template(REQUIREMENT_JSON_PROMPT_TEMPLATE)
         response_chain = prompt | language_model
 
-        response = response_chain.invoke({"document_context": context_text})
+        response = response_chain.invoke({"document_context": prompt_context})
 
         if not response or not response.strip():
             logger.warning("AI model returned an empty response for requirements JSON generation.")

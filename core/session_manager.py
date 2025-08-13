@@ -65,6 +65,10 @@ def initialize_session_state():
         st.session_state.bm25_index = None
     if "bm25_corpus_chunks" not in st.session_state:
         st.session_state.bm25_corpus_chunks = []
+    if "generated_requirements" not in st.session_state:
+        st.session_state.generated_requirements = None
+    if "general_context_chunks" not in st.session_state:
+        st.session_state.general_context_chunks = []
 
 
 def load_context_document():
@@ -113,6 +117,8 @@ def reset_document_states(clear_chat=True):
     st.session_state.raw_documents = []
     st.session_state.document_summary = None
     st.session_state.document_keywords = None
+    st.session_state.generated_requirements = None
+    st.session_state.general_context_chunks = []
     st.session_state.bm25_index = None
     st.session_state.bm25_corpus_chunks = []
     logger.info("Document states reset.")
