@@ -448,6 +448,7 @@ if uploaded_files:
                             else:
                                 logger.info("No requirements chunks to index for BM25.")
                                 st.success("✅ Documents processed. No specific requirements chunks found for keyword search indexing.")
+                            st.rerun()
 
                         except Exception as e:
                             display_filenames = ", ".join(st.session_state.uploaded_filenames)
