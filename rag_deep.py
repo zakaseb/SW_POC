@@ -280,6 +280,7 @@ with st.sidebar:
                     )
 
                     common_context_vector_store = None
+                    context_prep_success = True  # Assume success unless it fails
                     if common_context_docs:
                         try:
                             # Create a temporary vector store for efficient searching of the context
@@ -288,36 +289,36 @@ with st.sidebar:
                         except Exception as e:
                             logger.error(f"Failed to create temporary context vector store: {e}")
                             st.sidebar.error("Failed to prepare context for generation. Please check logs.")
-                            # Stop execution of this block if context prep fails
-                            return
+                            context_prep_success = False  # Mark as failed
 
-                    all_requirements = []
-                    for req_chunk in requirements_chunks:
-                        # For each requirement, find the most relevant context from the common pool
-                        relevant_context_docs = []
-                        if common_context_vector_store:
-                            try:
-                                relevant_context_docs = common_context_vector_store.similarity_search(
-                                    req_chunk.page_content, k=5  # Limit to top 5 relevant chunks
-                                )
-                            except Exception as e:
-                                logger.warning(f"Could not perform similarity search for a requirement chunk: {e}")
+                    if context_prep_success:
+                        all_requirements = []
+                        for req_chunk in requirements_chunks:
+                            # For each requirement, find the most relevant context from the common pool
+                            relevant_context_docs = []
+                            if common_context_vector_store:
+                                try:
+                                    relevant_context_docs = common_context_vector_store.similarity_search(
+                                        req_chunk.page_content, k=5  # Limit to top 5 relevant chunks
+                                    )
+                                except Exception as e:
+                                    logger.warning(f"Could not perform similarity search for a requirement chunk: {e}")
 
-                        json_response = generate_requirements_json(
-                            LANGUAGE_MODEL,
-                            req_chunk,
-                            context_documents=relevant_context_docs,
-                        )
-                        all_requirements.append(json_response)
-                    st.session_state.generated_requirements = all_requirements
+                            json_response = generate_requirements_json(
+                                LANGUAGE_MODEL,
+                                req_chunk,
+                                context_documents=relevant_context_docs,
+                            )
+                            all_requirements.append(json_response)
+                        st.session_state.generated_requirements = all_requirements
 
-                    excel_data = generate_excel_file(all_requirements)
-                    if excel_data:
-                        download_link = get_excel_download_link(excel_data)
-                        st.session_state.download_trigger = download_link
-                        st.sidebar.success("Requirements generated and Excel file is downloading!")
-                    else:
-                        st.sidebar.warning("Requirements generated, but no valid data was found to create an Excel file.")
+                        excel_data = generate_excel_file(all_requirements)
+                        if excel_data:
+                            download_link = get_excel_download_link(excel_data)
+                            st.session_state.download_trigger = download_link
+                            st.sidebar.success("Requirements generated and Excel file is downloading!")
+                        else:
+                            st.sidebar.warning("Requirements generated, but no valid data was found to create an Excel file.")
 
         if st.button(
             "Extract Keywords from Content", key="extract_keywords_content_button"
