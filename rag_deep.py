@@ -263,6 +263,8 @@ with st.sidebar:
     if st.session_state.document_processed:
         if st.button("Generate Requirements", key="generate_requirements_button"):
             with st.spinner("Generating requirements... This might take a moment."):
+                from langchain_core.vectorstores import InMemoryVectorStore
+
                 st.session_state.generated_requirements = None
                 st.session_state.excel_file = None
                 requirements_chunks = get_requirements_chunks(
@@ -271,18 +273,40 @@ with st.sidebar:
                 if not requirements_chunks:
                     st.sidebar.warning("No requirements chunks found to process.")
                 else:
-                    # Get the combined persistent and general context to be used for all requirement generations
+                    # Get the combined persistent and general context
                     common_context_docs = get_persistent_context(
                         context_vector_db=st.session_state.CONTEXT_VECTOR_DB,
                         general_context_chunks=st.session_state.get("general_context_chunks", []),
                     )
 
+                    common_context_vector_store = None
+                    if common_context_docs:
+                        try:
+                            # Create a temporary vector store for efficient searching of the context
+                            common_context_vector_store = InMemoryVectorStore(EMBEDDING_MODEL)
+                            common_context_vector_store.add_documents(common_context_docs)
+                        except Exception as e:
+                            logger.error(f"Failed to create temporary context vector store: {e}")
+                            st.sidebar.error("Failed to prepare context for generation. Please check logs.")
+                            # Stop execution of this block if context prep fails
+                            return
+
                     all_requirements = []
                     for req_chunk in requirements_chunks:
+                        # For each requirement, find the most relevant context from the common pool
+                        relevant_context_docs = []
+                        if common_context_vector_store:
+                            try:
+                                relevant_context_docs = common_context_vector_store.similarity_search(
+                                    req_chunk.page_content, k=5  # Limit to top 5 relevant chunks
+                                )
+                            except Exception as e:
+                                logger.warning(f"Could not perform similarity search for a requirement chunk: {e}")
+
                         json_response = generate_requirements_json(
                             LANGUAGE_MODEL,
                             req_chunk,
-                            context_documents=common_context_docs,
+                            context_documents=relevant_context_docs,
                         )
                         all_requirements.append(json_response)
                     st.session_state.generated_requirements = all_requirements
