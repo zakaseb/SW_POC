@@ -64,6 +64,44 @@ When extracting the requirements, please ensure that the following are adhered t
 3. Requirements are unambiguous.
 4. Requirements are concise.
 
+whereby:
+
+Consistent
+Definition:
+A requirement is consistent when it does not conflict with any other requirement and aligns with the system’s overall goals and constraints.
+Key Characteristics:
+•No contradictions within the requirement or between requirements.
+•Does not violate domain rules or higher-level specifications.
+•Maintains uniform terminology and units throughout.
+Example (Inconsistent):
+•ReqA: "The system shall operate at 24V DC."
+•ReqB: "The system shall operate at 12V DC."
+These conflict and therefore are not consistent.
+
+Concise
+Definition:
+A requirement is concise when it is brief, clear, and to the point, using only necessary words to convey its meaning.
+Key Characteristics:
+•No unnecessary jargon, filler words, or repetitions.
+•States one requirement per statement (atomicity).
+•Avoids long or complex sentences.
+Example (Not Concise):
+•"The vehicle shall have the capability to be able to transport up to 8 individuals, including but not limited to military personnel, over rough terrain under various environmental conditions."
+Concise Version:
+•"The vehicle shall transport up to 8 personnel over rough terrain in all environmental conditions."
+
+Unambiguous
+Definition:
+A requirement is unambiguous when it can be interpreted in only one way by all stakeholders (designers, testers, customers, etc.).
+Key Characteristics:
+•Uses precise language (e.g., no "fast," "efficient," "user-friendly").
+•Includes quantifiable or measurable criteriawhere applicable.
+•Avoids vague modifiers and subjective terms.
+Example (Ambiguous):
+•"The system shall be easy to use."
+Unambiguous Version:
+•"The system shall require no more than 3 steps to complete any standard operation."
+
 In the case where requirements are not meeting the above, please mark them in the 'Tags' 
 column as 'Updated' by adding the word 'Updated' in the Tags column (note: if there is a 
 TBD in the column, then separate them with a comma). Please update the description to adhere 
