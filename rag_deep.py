@@ -210,6 +210,7 @@ def get_excel_download_link(excel_data):
 # ---------------------------------
 
 with st.sidebar:
+    st.image("halcon_logo.jpeg", use_column_width=True)
     st.header("Controls")
 
     st.header("Context Document")
@@ -345,20 +346,8 @@ with st.sidebar:
             "Keywords:", st.session_state.document_keywords, height=100, disabled=True
         )
 
-col1, col2 = st.columns([1, 5])
-with col1:
-    # It is recommended to use a logo with a transparent background and a width of 100-150 pixels.
-    # Please replace "assets/logo.png" with the actual path to your logo file.
-    # If you do not have a logo, you can remove this section.
-    try:
-        st.image("halcon_logo.jpeg", width=100)
-    except Exception as e:
-        st.error("Logo not found. Please make sure the logo file is at halcon_logo.jpeg")
-
-with col2:
-    st.title("MBSE: Requirement Generator")
-    st.markdown("### Your AI Document Assistant")
-
+st.title("📘 MBSE: Requirement Generator")
+st.markdown("### Your AI Document Assistant")
 st.markdown("---")
 
 if st.session_state.get("context_document_loaded"):
