@@ -210,7 +210,7 @@ def get_excel_download_link(excel_data):
 # ---------------------------------
 
 with st.sidebar:
-    st.image("halcon_logo.jpeg", use_column_width=True)
+    st.image("halcon_logo.jpeg", use_container_width=True)
     st.header("Controls")
 
     st.header("Context Document")
