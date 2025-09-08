@@ -53,26 +53,29 @@ st.markdown(
     """
     <style>
     .stApp {
-        background-color: #0E1117;
-        color: #FFFFFF;
+        background-color: #F3F6F8;
+        color: #384671;
+    }
+    [data-testid="stSidebar"] {
+        background-color: #FFFFFF;
     }
     .stChatInput input {
-        background-color: #1E1E1E !important;
-        color: #FFFFFF !important;
-        border: 1px solid #3A3A3A !important;
+        background-color: #FFFFFF !important;
+        color: #384671 !important;
+        border: 1px solid #D1D9E0 !important;
     }
     .stChatMessage[data-testid="stChatMessage"]:nth-child(odd) {
-        background-color: #1E1E1E !important;
-        border: 1px solid #3A3A3A !important;
-        color: #E0E0E0 !important;
+        background-color: #FFFFFF !important;
+        border: 1px solid #D1D9E0 !important;
+        color: #384671 !important;
         border-radius: 10px;
         padding: 15px;
         margin: 10px 0;
     }
     .stChatMessage[data-testid="stChatMessage"]:nth-child(even) {
-        background-color: #2A2A2A !important;
-        border: 1px solid #404040 !important;
-        color: #F0F0F0 !important;
+        background-color: #F3F6F8 !important;
+        border: 1px solid #D1D9E0 !important;
+        color: #384671 !important;
         border-radius: 10px;
         padding: 15px;
         margin: 10px 0;
@@ -82,16 +85,16 @@ st.markdown(
         color: #000000 !important;
     }
     .stChatMessage p, .stChatMessage div {
-        color: #FFFFFF !important;
+        color: #384671 !important;
     }
     .stFileUploader {
-        background-color: #1E1E1E;
-        border: 1px solid #3A3A3A;
+        background-color: #FFFFFF;
+        border: 1px solid #D1D9E0;
         border-radius: 5px;
         padding: 15px;
     }
     h1, h2, h3 {
-        color: #00FFAA !important;
+        color: #384671 !important;
     }
     </style>
     """,
@@ -207,6 +210,7 @@ def get_excel_download_link(excel_data):
 # ---------------------------------
 
 with st.sidebar:
+    st.image("halcon_logo.jpeg", use_container_width=True)
     st.header("Controls")
 
     st.header("Context Document")
@@ -342,7 +346,7 @@ with st.sidebar:
             "Keywords:", st.session_state.document_keywords, height=100, disabled=True
         )
 
-st.title("📘 MBSE: Requirement Generator")
+st.title("📘 MBSE: JAMA Requirement Generator")
 st.markdown("### Your AI Document Assistant")
 st.markdown("---")
 
