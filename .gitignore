@@ -16,6 +16,3 @@ users.db
 # Logs
 streamlit_run.log
 *.log
-
-# Job results
-job_results/

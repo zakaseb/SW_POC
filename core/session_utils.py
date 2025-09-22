@@ -17,7 +17,8 @@ PERSISTENT_KEYS = [
     "general_context_chunks",
     "requirements_chunks",
     "processed_context_file_info",
-    "context_document_loaded"
+    "context_document_loaded",
+    "excel_file_data"
 ]
 
 def package_session_for_storage():

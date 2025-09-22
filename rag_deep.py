@@ -38,7 +38,7 @@ from core.document_processing import (
     index_documents,
 )
 from core.search_pipeline import get_persistent_context, get_requirements_chunks
-from core.generation import generate_answer, generate_summary, generate_keywords, generate_requirements_json
+from core.generation import generate_answer, generate_summary, generate_keywords, generate_requirements_json, generate_excel_file
 from core.session_manager import (
     initialize_session_state,
     reset_document_states,
@@ -46,10 +46,8 @@ from core.session_manager import (
     purge_persistent_memory,
     save_persistent_memory,
 )
-import multiprocessing
-from core.database import save_session, create_job, get_user_jobs
+from core.database import save_session
 from core.session_utils import package_session_for_storage
-from core.background_processor import process_requirements_job
 
 # ---------------------------------
 # App Styling with CSS
@@ -132,86 +130,6 @@ logger.info(f"Ensured PDF storage directory exists: {PDF_STORAGE_PATH}")
 if not show_login_form():
     st.stop()
 
-def generate_excel_file(requirements_json_list):
-    """
-    Parses a list of JSON strings, cleans them, and generates an Excel file in memory.
-    """
-    all_requirements = []
-
-    for json_str in requirements_json_list:
-        # Clean the string: remove markdown and other non-JSON artifacts
-        # This regex looks for content between ```json and ``` or just `{` and `}` or `[` and `]`
-        match = re.search(r"```json\s*([\s\S]*?)\s*```|([\s\S]*)", json_str)
-        if match:
-            cleaned_str = match.group(1) if match.group(1) is not None else match.group(2)
-            cleaned_str = cleaned_str.strip()
-
-            try:
-                # Try to parse the cleaned string
-                data = json.loads(cleaned_str)
-                if isinstance(data, list):
-                    all_requirements.extend(data)
-                elif isinstance(data, dict):
-                    all_requirements.append(data)
-            except json.JSONDecodeError:
-                logger.warning(f"Could not decode JSON from string: {cleaned_str}")
-                continue # Skip this string if it's not valid JSON
-
-    if not all_requirements:
-        return None
-
-    # Define the columns based on the JSON schema to ensure order and handle missing keys
-    columns = [
-        "Name",
-        "Description",
-        "VerificationMethod",
-        "Tags",
-        "RequirementType",
-        "DocumentRequirementID"
-    ]
-
-    # Create a DataFrame
-    df = pd.DataFrame(all_requirements)
-
-    # Ensure all columns are present, fill missing ones with empty strings
-    for col in columns:
-        if col not in df.columns:
-            df[col] = ''
-
-    # Reorder columns to match the desired schema and select only them
-    df = df[columns]
-
-    # Convert list-like columns (e.g., Tags) to a string representation
-    if 'Tags' in df.columns:
-        df['Tags'] = df['Tags'].apply(lambda x: ', '.join(x) if isinstance(x, list) else x)
-
-    # Create an in-memory Excel file
-    output = io.BytesIO()
-    with pd.ExcelWriter(output, engine='openpyxl') as writer:
-        df.to_excel(writer, index=False, sheet_name='Requirements')
-
-    processed_data = output.getvalue()
-    return processed_data
-
-
-def get_excel_download_link(excel_data):
-    """
-    Generates a link to download the given excel data.
-    """
-    b64 = base64.b64encode(excel_data).decode()
-    href = f'<a href="data:application/octet-stream;base64,{b64}" download="generated_requirements.xlsx" id="downloadLink" style="display:none">Download Excel</a>'
-    script = """
-    <script>
-        window.setTimeout(function() {
-            var link = document.getElementById('downloadLink');
-            if (link) {
-                link.click();
-            }
-        }, 200);
-    </script>
-    """
-    return href + script
-
 
 # ---------------------------------
 # User Interface
@@ -289,21 +207,36 @@ with st.sidebar:
 
     if st.session_state.document_processed:
         if st.button("Generate Requirements", key="generate_requirements_button"):
-            # Save the session now, so the background job can access the latest state
-            session_to_save = package_session_for_storage()
-            save_session(st.session_state.user_id, session_to_save)
+            with st.spinner("Generating requirements... This might take a moment."):
+                requirements_chunks = get_requirements_chunks(
+                    document_vector_db=st.session_state.DOCUMENT_VECTOR_DB,
+                )
+                if not requirements_chunks:
+                    st.sidebar.warning("No requirements chunks found to process.")
+                else:
+                    all_requirements = []
+                    for req_chunk in requirements_chunks:
+                        json_response = generate_requirements_json(
+                            LANGUAGE_MODEL, req_chunk
+                        )
+                        all_requirements.append(json_response)
+                    st.session_state.generated_requirements = all_requirements
 
-            # Create a job in the database
-            job_id = create_job(st.session_state.user_id, 'generate_requirements')
+                    excel_data = generate_excel_file(all_requirements)
+                    if excel_data:
+                        st.session_state.excel_file_data = excel_data
+                        st.sidebar.success("Requirements generated successfully!")
+                    else:
+                        st.sidebar.warning("Requirements generated, but no valid data was found to create an Excel file.")
 
-            # Start the background process
-            p = multiprocessing.Process(
-                target=process_requirements_job,
-                args=(job_id, st.session_state.user_id)
+        if "excel_file_data" in st.session_state and st.session_state.excel_file_data:
+            st.download_button(
+                label="Download Requirements",
+                data=st.session_state.excel_file_data,
+                file_name="generated_requirements.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                key="download_requirements"
             )
-            p.start()
-
-            st.sidebar.info(f"Requirement generation started as a background job (Job ID: {job_id}). You can log out and check back later.")
 
         if st.button(
             "Extract Keywords from Content", key="extract_keywords_content_button"
@@ -360,32 +293,6 @@ with st.sidebar:
             "Keywords:", st.session_state.document_keywords, height=100, disabled=True
         )
 
-    # --- Job Status Section ---
-    st.sidebar.markdown("---")
-    st.sidebar.subheader("Job Status")
-    user_jobs = get_user_jobs(st.session_state.user_id)
-    if not user_jobs:
-        st.sidebar.info("No jobs submitted yet.")
-    else:
-        for job in user_jobs:
-            job_id, job_type, status, created_at, completed_at, result_path = job
-            with st.sidebar.expander(f"Job {job_id} ({job_type}) - {status}"):
-                st.write(f"Status: {status}")
-                st.write(f"Submitted: {created_at}")
-                if completed_at:
-                    st.write(f"Completed: {completed_at}")
-
-                if status == 'completed' and result_path and os.path.exists(result_path):
-                    with open(result_path, "rb") as file:
-                        st.download_button(
-                            label="Download Requirements",
-                            data=file,
-                            file_name=os.path.basename(result_path),
-                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                            key=f"download_{job_id}"
-                        )
-                elif status == 'failed':
-                    st.error(f"Job failed. Reason: {result_path}")
 
 
 st.title("📘 MBSE: JAMA Requirement Generator")

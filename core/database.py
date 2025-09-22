@@ -20,19 +20,6 @@ def init_db():
                 password_hash TEXT NOT NULL
             )
         """)
-        # Jobs table
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS jobs (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                user_id INTEGER NOT NULL,
-                job_type TEXT NOT NULL,
-                status TEXT NOT NULL,
-                created_at TIMESTAMP NOT NULL,
-                completed_at TIMESTAMP,
-                result_path TEXT,
-                FOREIGN KEY (user_id) REFERENCES users (id)
-            )
-        """)
         # User sessions table
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS user_sessions (
@@ -84,41 +71,6 @@ def list_users():
         cursor = conn.cursor()
         cursor.execute("SELECT username FROM users")
         return [row[0] for row in cursor.fetchall()]
-
-# --- Job Management ---
-
-def create_job(user_id, job_type):
-    """Creates a new job entry and returns the job ID."""
-    with sqlite3.connect(DB_PATH) as conn:
-        cursor = conn.cursor()
-        now = datetime.utcnow()
-        cursor.execute(
-            "INSERT INTO jobs (user_id, job_type, status, created_at) VALUES (?, ?, ?, ?)",
-            (user_id, job_type, 'pending', now)
-        )
-        conn.commit()
-        return cursor.lastrowid
-
-def update_job_status(job_id, status, result_path=None):
-    """Updates the status and result of a job."""
-    with sqlite3.connect(DB_PATH) as conn:
-        cursor = conn.cursor()
-        now = datetime.utcnow()
-        cursor.execute(
-            "UPDATE jobs SET status = ?, result_path = ?, completed_at = ? WHERE id = ?",
-            (status, result_path, now, job_id)
-        )
-        conn.commit()
-
-def get_user_jobs(user_id):
-    """Retrieves all jobs for a given user."""
-    with sqlite3.connect(DB_PATH) as conn:
-        cursor = conn.cursor()
-        cursor.execute(
-            "SELECT id, job_type, status, created_at, completed_at, result_path FROM jobs WHERE user_id = ? ORDER BY created_at DESC",
-            (user_id,)
-        )
-        return cursor.fetchall()
 
 # --- Session Management ---
 
