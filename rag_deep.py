@@ -217,6 +217,11 @@ with st.sidebar:
     st.image("halcon_logo.jpeg", use_container_width=True)
     st.header("Controls")
 
+    if st.button("Logout", key="logout_button"):
+        st.session_state.authenticated = False
+        reset_document_states(clear_chat=True)
+        st.rerun()
+
     st.header("Context Document")
     context_uploaded_file = st.file_uploader(
         "Upload Context Document (PDF, DOCX, TXT)",
