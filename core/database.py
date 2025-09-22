@@ -5,7 +5,10 @@ import os
 DB_PATH = os.path.join(os.path.dirname(__file__), '..', 'users.db')
 
 def init_db():
-    """Initializes the database and creates the users table if it doesn't exist."""
+    """
+    Initializes the database, creates the users table if it doesn't exist,
+    and adds a sample user if the table is empty.
+    """
     with sqlite3.connect(DB_PATH) as conn:
         cursor = conn.cursor()
         cursor.execute("""
@@ -15,6 +18,21 @@ def init_db():
                 password_hash TEXT NOT NULL
             )
         """)
+
+        # Check if the users table is empty
+        cursor.execute("SELECT COUNT(*) FROM users")
+        count = cursor.fetchone()[0]
+
+        if count == 0:
+            # Add a sample user if the table is empty
+            username = "jane.doe"
+            password = "password123"
+            password_hash = bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt())
+            cursor.execute(
+                "INSERT INTO users (username, password_hash) VALUES (?, ?)",
+                (username, password_hash.decode('utf-8'))
+            )
+
         conn.commit()
 
 def add_user(username, password):
@@ -42,15 +60,3 @@ def verify_user(username, password):
             password_hash = result[0].encode('utf-8')
             return bcrypt.checkpw(password.encode('utf-8'), password_hash)
         return False
-
-def create_sample_user():
-    """Creates a sample user for testing purposes."""
-    init_db()
-    if not verify_user("jane.doe", "password123"):
-        add_user("jane.doe", "password123")
-
-if __name__ == '__main__':
-    # This allows creating the DB and a sample user from the command line
-    print("Initializing database and creating sample user...")
-    create_sample_user()
-    print("Done.")
