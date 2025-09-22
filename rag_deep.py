@@ -46,6 +46,10 @@ from core.session_manager import (
     purge_persistent_memory,
     save_persistent_memory,
 )
+import multiprocessing
+from core.database import save_session, create_job, get_user_jobs
+from core.session_utils import package_session_for_storage
+from core.background_processor import process_requirements_job
 
 # ---------------------------------
 # App Styling with CSS
@@ -218,8 +222,18 @@ with st.sidebar:
     st.header("Controls")
 
     if st.button("Logout", key="logout_button"):
+        session_to_save = package_session_for_storage()
+        save_session(st.session_state.user_id, session_to_save)
+
         st.session_state.authenticated = False
-        reset_document_states(clear_chat=True)
+        # Clear sensitive and user-specific keys from session state
+        for key in list(st.session_state.keys()):
+            if key not in ['authenticated']: # Keep authentication status
+                del st.session_state[key]
+
+        # Re-initialize for a clean slate, except for auth status
+        initialize_session_state()
+
         st.rerun()
 
     st.header("Context Document")
@@ -275,30 +289,21 @@ with st.sidebar:
 
     if st.session_state.document_processed:
         if st.button("Generate Requirements", key="generate_requirements_button"):
-            with st.spinner("Generating requirements... This might take a moment."):
-                st.session_state.generated_requirements = None
-                st.session_state.excel_file = None
-                requirements_chunks = get_requirements_chunks(
-                    document_vector_db=st.session_state.DOCUMENT_VECTOR_DB,
-                )
-                if not requirements_chunks:
-                    st.sidebar.warning("No requirements chunks found to process.")
-                else:
-                    all_requirements = []
-                    for req_chunk in requirements_chunks:
-                        json_response = generate_requirements_json(
-                            LANGUAGE_MODEL, req_chunk
-                        )
-                        all_requirements.append(json_response)
-                    st.session_state.generated_requirements = all_requirements
+            # Save the session now, so the background job can access the latest state
+            session_to_save = package_session_for_storage()
+            save_session(st.session_state.user_id, session_to_save)
 
-                    excel_data = generate_excel_file(all_requirements)
-                    if excel_data:
-                        download_link = get_excel_download_link(excel_data)
-                        st.session_state.download_trigger = download_link
-                        st.sidebar.success("Requirements generated and Excel file is downloading!")
-                    else:
-                        st.sidebar.warning("Requirements generated, but no valid data was found to create an Excel file.")
+            # Create a job in the database
+            job_id = create_job(st.session_state.user_id, 'generate_requirements')
+
+            # Start the background process
+            p = multiprocessing.Process(
+                target=process_requirements_job,
+                args=(job_id, st.session_state.user_id)
+            )
+            p.start()
+
+            st.sidebar.info(f"Requirement generation started as a background job (Job ID: {job_id}). You can log out and check back later.")
 
         if st.button(
             "Extract Keywords from Content", key="extract_keywords_content_button"
@@ -354,6 +359,34 @@ with st.sidebar:
         st.sidebar.text_area(
             "Keywords:", st.session_state.document_keywords, height=100, disabled=True
         )
+
+    # --- Job Status Section ---
+    st.sidebar.markdown("---")
+    st.sidebar.subheader("Job Status")
+    user_jobs = get_user_jobs(st.session_state.user_id)
+    if not user_jobs:
+        st.sidebar.info("No jobs submitted yet.")
+    else:
+        for job in user_jobs:
+            job_id, job_type, status, created_at, completed_at, result_path = job
+            with st.sidebar.expander(f"Job {job_id} ({job_type}) - {status}"):
+                st.write(f"Status: {status}")
+                st.write(f"Submitted: {created_at}")
+                if completed_at:
+                    st.write(f"Completed: {completed_at}")
+
+                if status == 'completed' and result_path and os.path.exists(result_path):
+                    with open(result_path, "rb") as file:
+                        st.download_button(
+                            label="Download Requirements",
+                            data=file,
+                            file_name=os.path.basename(result_path),
+                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                            key=f"download_{job_id}"
+                        )
+                elif status == 'failed':
+                    st.error(f"Job failed. Reason: {result_path}")
+
 
 st.title("📘 MBSE: JAMA Requirement Generator")
 st.markdown("### Your AI Document Assistant")
