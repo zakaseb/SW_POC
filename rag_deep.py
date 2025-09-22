@@ -15,6 +15,7 @@ logger = get_logger(__name__)
 
 
 # Import from new core modules
+from core.auth import show_login_form
 from core.config import (
     MAX_HISTORY_TURNS,
     # K_SEMANTIC, # Removed as it's used in core.search_pipeline
@@ -123,6 +124,9 @@ logger.info("Core models loaded successfully (or Reranker gracefully disabled)."
 os.makedirs(PDF_STORAGE_PATH, exist_ok=True)
 logger.info(f"Ensured PDF storage directory exists: {PDF_STORAGE_PATH}")
 
+
+if not show_login_form():
+    st.stop()
 
 def generate_excel_file(requirements_json_list):
     """

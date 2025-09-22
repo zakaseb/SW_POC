@@ -9,3 +9,10 @@ venv/
 
 # Uploaded PDFs directory (if you don't want to commit user uploads)
 document_store/pdfs/
+
+# Database
+users.db
+
+# Logs
+streamlit_run.log
+*.log
