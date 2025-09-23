@@ -130,8 +130,6 @@ logger.info(f"Ensured PDF storage directory exists: {PDF_STORAGE_PATH}")
 if not show_login_form():
     st.stop()
 
-# Consume the login flag
-just_logged_in = st.session_state.pop('just_logged_in', False)
 
 # ---------------------------------
 # User Interface
@@ -414,16 +412,6 @@ if uploaded_files:
             st.warning("Although files were uploaded, none could be successfully processed. Please check file formats and content.")
     else:
         logger.info("Uploaded files are the same as the ones already processed. Skipping reprocessing.")
-# This block handles the case where the file uploader is empty.
-else:
-    # If the uploader is empty, but we have processed files in memory from a previous action,
-    # it means the user has cleared the uploader. We should reset the state.
-    # We add a check to ensure this reset doesn't happen right after login.
-    if st.session_state.get("processed_files_info") and not just_logged_in:
-        logger.info("File uploader is empty, but processed files exist in session. Resetting state.")
-        reset_document_states(clear_chat=True)
-        reset_file_uploader()
-        st.rerun()
 
 
 if st.session_state.get("uploaded_filenames") and st.session_state.get(
