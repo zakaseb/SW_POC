@@ -228,3 +228,25 @@ def index_documents(document_chunks, vector_db=None):
         logger.exception(f"{user_message} Details: {e}")
         st.error(f"{user_message} Check logs for details.")
         st.session_state.document_processed = False
+
+
+def re_index_documents_from_session():
+    """
+    Re-indexes documents from chunks stored in the session state.
+    This is used to repopulate in-memory vector databases after a session is loaded.
+    """
+    logger.info("Attempting to re-index documents from session state.")
+
+    # Re-index general context chunks
+    if "general_context_chunks" in st.session_state and st.session_state.general_context_chunks:
+        logger.info(f"Re-indexing {len(st.session_state.general_context_chunks)} general context chunks.")
+        index_documents(st.session_state.general_context_chunks, vector_db=st.session_state.CONTEXT_VECTOR_DB)
+    else:
+        logger.info("No general context chunks found in session state to re-index.")
+
+    # Re-index requirements chunks
+    if "requirements_chunks" in st.session_state and st.session_state.requirements_chunks:
+        logger.info(f"Re-indexing {len(st.session_state.requirements_chunks)} requirements chunks.")
+        index_documents(st.session_state.requirements_chunks, vector_db=st.session_state.DOCUMENT_VECTOR_DB)
+    else:
+        logger.info("No requirements chunks found in session state to re-index.")
