@@ -29,6 +29,7 @@ def show_login_form():
                     if st.session_state.get("document_processed"):
                         re_index_documents_from_session()
 
+                st.session_state.just_logged_in = True
                 st.rerun()
             else:
                 st.error("Invalid username or password")
