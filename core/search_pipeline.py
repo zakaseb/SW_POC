@@ -29,17 +29,31 @@ def get_persistent_context(context_vector_db, general_context_chunks):
 
 def get_requirements_chunks(document_vector_db):
     """
-    Retrieves all documents from the document vector store (requirements chunks).
+    Retrieves all requirements chunks. It prioritizes chunks stored in the session state
+    and falls back to querying the vector store.
     """
-    requirements_chunks = []
+    # Prioritize session state as the source of truth after a session is loaded.
+    if "requirements_chunks" in st.session_state and st.session_state["requirements_chunks"]:
+        logger.info(
+            f"Returning {len(st.session_state['requirements_chunks'])} requirements chunks directly from session state."
+        )
+        return st.session_state["requirements_chunks"]
 
-    # Retrieve all documents from the document vector store
+    # Fallback to querying the vector store if session state is empty.
+    logger.warning(
+        "Requirements chunks not found in session state. Attempting to retrieve from vector store."
+    )
+    requirements_chunks = []
     if document_vector_db:
         try:
-            # The InMemoryVectorStore does not have a "get all" method, so we do a similarity search with a wildcard
-            # and a high k value to retrieve all documents.
-            requirements_chunks.extend(document_vector_db.similarity_search("", k=10000))
-            logger.info(f"Retrieved {len(requirements_chunks)} documents from the document vector store.")
+            retrieved_chunks = document_vector_db.similarity_search("", k=10000)
+            # Filter out potential empty/dummy chunks from an uninitialized vector store.
+            for chunk in retrieved_chunks:
+                if chunk.page_content:
+                    requirements_chunks.append(chunk)
+            logger.info(
+                f"Retrieved {len(requirements_chunks)} non-empty documents from the document vector store."
+            )
         except Exception as e:
             user_message = "An error occurred while retrieving documents from the document vector store."
             logger.exception(f"{user_message} Details: {e}")
