@@ -95,3 +95,10 @@ def load_session(user_id):
         if result:
             return pickle.loads(result[0])
         return None
+
+def delete_session(user_id):
+    """Deletes a user's session data."""
+    with sqlite3.connect(DB_PATH) as conn:
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM user_sessions WHERE user_id = ?", (user_id,))
+        conn.commit()

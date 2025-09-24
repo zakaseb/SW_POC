@@ -2,34 +2,45 @@ import streamlit as st
 from langchain_core.vectorstores import InMemoryVectorStore
 from .model_loader import get_embedding_model
 from .logger_config import get_logger
-import os
-import json
-from .config import MEMORY_FILE_PATH
+from .database import delete_session
 
 logger = get_logger(__name__)
 
 
-def load_persistent_memory():
-    """Loads the persistent memory from the file into the session state."""
-    if os.path.exists(MEMORY_FILE_PATH):
-        with open(MEMORY_FILE_PATH, "r") as f:
-            st.session_state.memory = json.load(f)
-    else:
-        st.session_state.memory = []
-
-
-def save_persistent_memory():
-    """Saves the session state's memory to the file."""
-    os.makedirs(os.path.dirname(MEMORY_FILE_PATH), exist_ok=True)
-    with open(MEMORY_FILE_PATH, "w") as f:
-        json.dump(st.session_state.memory, f)
-
-
 def purge_persistent_memory():
-    """Purges the persistent memory file."""
-    if os.path.exists(MEMORY_FILE_PATH):
-        os.remove(MEMORY_FILE_PATH)
+    """
+    Purges all persisted data for the current user from the database and resets
+    the current session state completely.
+    """
+    user_id = st.session_state.get("user_id")
+    if not user_id:
+        logger.warning("Attempted to purge memory without a user_id in session.")
+        st.error("Cannot purge memory: User not identified.")
+        return
+
+    # 1. Delete the session from the persistent database
+    try:
+        delete_session(user_id)
+        logger.info(f"Successfully purged persistent session data for user_id: {user_id}.")
+    except Exception as e:
+        logger.exception(f"Failed to purge session for user_id: {user_id}. Error: {e}")
+        st.error("Failed to purge persistent memory from the database.")
+        return
+
+    # 2. Reset the current in-memory session state completely
+
+    # Reset document-related state
+    reset_document_states(clear_chat=True)
+
+    # Reset context-document-related state
+    st.session_state.CONTEXT_VECTOR_DB = InMemoryVectorStore(get_embedding_model())
+    st.session_state.context_document_loaded = False
+    st.session_state.processed_context_file_info = None
+
+    # Reset chat memory
     st.session_state.memory = []
+
+    logger.info(f"In-memory session state completely reset for user_id: {user_id}.")
 
 
 def initialize_session_state():
@@ -104,17 +115,31 @@ def reset_document_states(clear_chat=True):
     Resets all document-related session state variables.
     Optionally clears chat history.
     """
+    # Re-initialize vector stores
     st.session_state.DOCUMENT_VECTOR_DB = InMemoryVectorStore(get_embedding_model())
+
+    # Reset file processing info
     st.session_state.document_processed = False
-    if clear_chat:
-        st.session_state.messages = []
-    # uploaded_file_key is typically incremented where this is called, if needed for uploader reset
+    st.session_state.processed_files_info = {}
     st.session_state.uploaded_filenames = []
     st.session_state.raw_documents = []
+
+    # Reset generated content
     st.session_state.document_summary = None
     st.session_state.document_keywords = None
+    st.session_state.generated_requirements = None
+    st.session_state.excel_file_data = None
+
+    # Reset chunks and search indices
+    st.session_state.general_context_chunks = []
+    st.session_state.requirements_chunks = []
     st.session_state.bm25_index = None
     st.session_state.bm25_corpus_chunks = []
+
+    # Optionally clear chat history
+    if clear_chat:
+        st.session_state.messages = []
+
     logger.info("Document states reset.")
 
 
