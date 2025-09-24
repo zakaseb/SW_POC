@@ -179,6 +179,8 @@ with st.sidebar:
                             all_chunks, vector_db=st.session_state.CONTEXT_VECTOR_DB
                         )
                         st.session_state.processed_context_file_info = context_file_info
+                        st.session_state.context_chunks = all_chunks
+                        st.session_state.context_document_loaded = True
                         st.success("Context document successfully uploaded!")
                     else:
                         st.error("Failed to generate chunks from the context document.")
@@ -225,6 +227,12 @@ with st.sidebar:
                     if excel_data:
                         st.session_state.excel_file_data = excel_data
                         st.sidebar.success("Requirements generated successfully!")
+                        # Trigger auto-download
+                        b64 = base64.b64encode(excel_data).decode()
+                        href = f'<a href="data:application/octet-stream;base64,{b64}" download="generated_requirements.xlsx" id="download-link" style="display:none">Download</a>'
+                        js = '<script>document.getElementById("download-link").click()</script>'
+                        st.session_state.download_trigger = href + js
+                        st.rerun()
                     else:
                         st.sidebar.warning("Requirements generated, but no valid data was found to create an Excel file.")
 

@@ -18,6 +18,7 @@ PERSISTENT_KEYS = [
     "requirements_chunks",
     "processed_context_file_info",
     "context_document_loaded",
+    "context_chunks",
     "excel_file_data"
 ]
 

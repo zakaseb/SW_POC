@@ -250,3 +250,12 @@ def re_index_documents_from_session():
         index_documents(st.session_state.requirements_chunks, vector_db=st.session_state.DOCUMENT_VECTOR_DB)
     else:
         logger.info("No requirements chunks found in session state to re-index.")
+
+    # Re-index standalone context chunks
+    if "context_chunks" in st.session_state and st.session_state.context_chunks:
+        logger.info(f"Re-indexing {len(st.session_state.context_chunks)} standalone context chunks.")
+        index_documents(st.session_state.context_chunks, vector_db=st.session_state.CONTEXT_VECTOR_DB)
+        # Also ensure the loaded flag is set if we are re-indexing its chunks
+        st.session_state.context_document_loaded = True
+    else:
+        logger.info("No standalone context chunks found in session state to re-index.")

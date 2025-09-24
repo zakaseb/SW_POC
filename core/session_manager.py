@@ -39,6 +39,7 @@ def purge_persistent_memory():
     st.session_state.CONTEXT_VECTOR_DB = InMemoryVectorStore(get_embedding_model())
     st.session_state.context_document_loaded = False
     st.session_state.processed_context_file_info = None
+    st.session_state.context_chunks = []
 
     # Reset chat memory
     st.session_state.memory = []
