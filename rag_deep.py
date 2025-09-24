@@ -44,7 +44,6 @@ from core.session_manager import (
     reset_document_states,
     reset_file_uploader,
     purge_persistent_memory,
-    save_persistent_memory,
 )
 from core.database import save_session
 from core.session_utils import package_session_for_storage
@@ -497,7 +496,6 @@ if st.session_state.document_processed:
                 {"role": "assistant", "content": ai_response, "avatar": "🤖"}
             )
             st.session_state.memory.append({"role": "assistant", "content": ai_response})
-            save_persistent_memory()
             with st.chat_message("assistant", avatar="🤖"):
                 st.write(ai_response)
 else:

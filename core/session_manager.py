@@ -3,6 +3,9 @@ from langchain_core.vectorstores import InMemoryVectorStore
 from .model_loader import get_embedding_model
 from .logger_config import get_logger
 from .database import delete_session
+import os
+from .document_processing import load_document, chunk_documents, index_documents
+from .config import CONTEXT_PDF_STORAGE_PATH
 
 logger = get_logger(__name__)
 
@@ -54,10 +57,11 @@ def initialize_session_state():
     if "messages" not in st.session_state:
         st.session_state.messages = []
     if "memory" not in st.session_state:
-        load_persistent_memory()
+        st.session_state.memory = []
     if "document_processed" not in st.session_state:
         st.session_state.document_processed = False
-    load_context_document()
+    if "context_document_loaded" not in st.session_state:
+        st.session_state.context_document_loaded = False
     if "uploaded_file_key" not in st.session_state:
         st.session_state.uploaded_file_key = 0
     if "uploaded_filenames" not in st.session_state:
@@ -76,38 +80,6 @@ def initialize_session_state():
         st.session_state.bm25_index = None
     if "bm25_corpus_chunks" not in st.session_state:
         st.session_state.bm25_corpus_chunks = []
-
-
-def load_context_document():
-    """Loads the context document at startup."""
-    from .document_processing import load_document, chunk_documents, index_documents
-    from .config import CONTEXT_PDF_STORAGE_PATH
-
-    if "context_document_loaded" not in st.session_state:
-        st.session_state.context_document_loaded = False
-
-    if not st.session_state.context_document_loaded:
-        if os.path.exists(CONTEXT_PDF_STORAGE_PATH):
-            for filename in os.listdir(CONTEXT_PDF_STORAGE_PATH):
-                file_path = os.path.join(CONTEXT_PDF_STORAGE_PATH, filename)
-                if os.path.isfile(file_path):
-                    raw_docs = load_document(file_path)
-                    if raw_docs:
-                        _, _, all_chunks = chunk_documents(raw_docs, CONTEXT_PDF_STORAGE_PATH, classify=False)
-                        if all_chunks:
-                                index_documents(
-                                all_chunks, vector_db=st.session_state.CONTEXT_VECTOR_DB
-                                )
-                                st.session_state.context_document_loaded = True
-                                logger.info(f"Context document '{filename}' loaded and indexed.")
-                        else:
-                            logger.warning(
-                                f"No chunks generated from context document '{filename}'."
-                            )
-                    else:
-                        logger.warning(
-                            f"Could not load context document '{filename}'."
-                        )
 
 
 def reset_document_states(clear_chat=True):
