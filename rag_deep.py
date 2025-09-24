@@ -372,14 +372,12 @@ if uploaded_files:
 
                     # Index requirements chunks into the main document vector DB
                     if requirements_chunks:
+                        st.session_state.requirements_chunks = requirements_chunks
                         logger.debug("Starting indexing of requirements chunks.")
                         index_documents(requirements_chunks, vector_db=st.session_state.DOCUMENT_VECTOR_DB)
                         logger.info(f"{len(requirements_chunks)} requirements chunks indexed.")
 
-                    # Set document_processed flag to true if any chunk was processed
-                    st.session_state.document_processed = True
-
-                    if st.session_state.document_processed:
+                    if st.session_state.get("document_processed", False):
                         logger.info("Vector indexing successful for one or both chunk types.")
                         try:
                             logger.debug("Starting BM25 indexing on requirements chunks.")
