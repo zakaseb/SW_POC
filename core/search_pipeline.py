@@ -3,27 +3,26 @@ from .logger_config import get_logger
 
 logger = get_logger(__name__)
 
-def get_persistent_context(context_vector_db, general_context_chunks):
+def get_persistent_context(context_vector_db):
     """
-    Retrieves all documents from the context vector store and general context chunks.
+    Retrieves all documents from the context vector store, ensuring no duplicates
+    and filtering out empty documents.
     """
     persistent_context = []
-
-    # Retrieve all documents from the context vector store
     if context_vector_db:
         try:
-            context_docs = context_vector_db.similarity_search("", k=10000)
-            persistent_context.extend(context_docs)
-            logger.info(f"Retrieved {len(context_docs)} documents from the context vector store.")
+            # Retrieve all documents. k=10000 is a stand-in for "all".
+            all_docs = context_vector_db.similarity_search("", k=10000)
+
+            # Filter out any potential dummy documents with no content
+            non_empty_docs = [doc for doc in all_docs if doc.page_content]
+
+            persistent_context.extend(non_empty_docs)
+            logger.info(f"Retrieved {len(persistent_context)} non-empty documents from the context vector store.")
         except Exception as e:
             user_message = "An error occurred while retrieving documents from the context vector store."
             logger.exception(f"{user_message} Details: {e}")
             st.error(f"{user_message} Check logs for details.")
-
-    # Add the general context chunks
-    if general_context_chunks:
-        persistent_context.extend(general_context_chunks)
-        logger.info(f"Added {len(general_context_chunks)} general context chunks to the persistent context.")
 
     return persistent_context
 
