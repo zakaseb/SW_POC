@@ -13,6 +13,8 @@ from core.logger_config import setup_logging, get_logger
 setup_logging()  # Initialize logging system
 logger = get_logger(__name__)
 
+from pathlib import Path
+import shutil
 
 # Import from new core modules
 from core.auth import show_login_form
@@ -47,6 +49,58 @@ from core.session_manager import (
 )
 from core.database import save_session
 from core.session_utils import package_session_for_storage
+
+# Use your existing config var
+CONTEXT_DIR = Path(CONTEXT_PDF_STORAGE_PATH).resolve()
+
+# Make TEMPLATE_DOC absolute (safer for Streamlit reruns)
+APP_ROOT = Path(__file__).resolve().parent
+TEMPLATE_DOC = (APP_ROOT / "Verification Methods.docx").resolve()
+
+
+def ensure_global_context_bootstrap() -> Path:
+    """Ensure global context dir exists and contains the default doc.
+    Returns the absolute path to the context file."""
+    CONTEXT_DIR.mkdir(parents=True, exist_ok=True)
+    dest = CONTEXT_DIR / TEMPLATE_DOC.name
+
+    if not TEMPLATE_DOC.exists():
+        logger.error(f"Template not found: {TEMPLATE_DOC}")
+        st.warning(f"Default context template not found at {TEMPLATE_DOC}")
+        return dest  # path where it would live
+
+    if not dest.exists():
+        shutil.copyfile(TEMPLATE_DOC, dest)
+        logger.info(f"Global default context copied to: {dest}")
+    else:
+        logger.info(f"Global default context already present: {dest}")
+
+    return dest
+
+
+def index_global_context_once(ctx_file: Path):
+    """Chunk + index the global context once per session or when the file changes."""
+    # do nothing if user purged this session
+    if not st.session_state.get("allow_global_context", False):
+        return
+    if not ctx_file.exists():
+        return
+
+    mtime = ctx_file.stat().st_mtime
+    if st.session_state.get("global_ctx_indexed_mtime") == mtime:
+        # already indexed this exact content
+        return
+
+    raw = load_document(str(ctx_file))
+    if not raw:
+        return
+    _, _, chunks = chunk_documents(raw, str(CONTEXT_DIR), classify=False)
+    if chunks:
+        index_documents(chunks, vector_db=st.session_state.CONTEXT_VECTOR_DB)
+        st.session_state.global_ctx_indexed_mtime = mtime
+        st.session_state.context_document_loaded = True
+        logger.info(f"Global context indexed: {len(chunks)} chunks.")
+
 
 # ---------------------------------
 # App Styling with CSS
@@ -129,7 +183,24 @@ logger.info(f"Ensured PDF storage directory exists: {PDF_STORAGE_PATH}")
 if not show_login_form():
     st.stop()
 
+# Auto-enable global context once per session after successful login
+if (st.session_state.get("authenticated")
+    and st.session_state.get("user_id")
+    and "allow_global_context" not in st.session_state):
+    st.session_state["allow_global_context"] = True     # ✅ auto ON at login
+    st.session_state["did_context_bootstrap"] = False   # allow one-time bootstrap
+    st.session_state.pop("global_ctx_indexed_mtime", None)
 
+# Auto-bootstrap ONCE per session, only if allowed
+if (st.session_state.get("authenticated")
+    and st.session_state.get("user_id")
+    and st.session_state.get("allow_global_context", False)
+    and not st.session_state.get("did_context_bootstrap", False)):
+    ctx_path = ensure_global_context_bootstrap()
+    index_global_context_once(ctx_path)
+    st.session_state["did_context_bootstrap"] = True
+    st.session_state["context_document_loaded"] = True
+   
 # ---------------------------------
 # User Interface
 # ---------------------------------
@@ -159,25 +230,17 @@ with st.sidebar:
         type=["pdf", "docx", "txt"],
         key="context_file_uploader",
     )
+
     if context_uploaded_file is not None:
-        context_file_info = {
-            "name": context_uploaded_file.name,
-            "size": context_uploaded_file.size,
-        }
+        context_file_info = {"name": context_uploaded_file.name, "size": context_uploaded_file.size}
         if context_file_info != st.session_state.get("processed_context_file_info"):
-            # Save the context document to the designated folder
-            saved_path = save_uploaded_file(
-                context_uploaded_file, CONTEXT_PDF_STORAGE_PATH
-            )
+            saved_path = save_uploaded_file(context_uploaded_file, CONTEXT_PDF_STORAGE_PATH)
             if saved_path:
-                # Process and index the context document
                 raw_docs = load_document(saved_path)
                 if raw_docs:
                     _, _, all_chunks = chunk_documents(raw_docs, CONTEXT_PDF_STORAGE_PATH, classify=False)
                     if all_chunks:
-                        index_documents(
-                            all_chunks, vector_db=st.session_state.CONTEXT_VECTOR_DB
-                        )
+                        index_documents(all_chunks, vector_db=st.session_state.CONTEXT_VECTOR_DB)
                         st.session_state.processed_context_file_info = context_file_info
                         st.session_state.context_chunks = all_chunks
                         st.session_state.context_document_loaded = True
@@ -193,10 +256,10 @@ with st.sidebar:
         st.session_state.messages = []
         logger.info("Chat history cleared by user.")
 
-    if st.button("Purge Memory", key="purge_memory"):
+    if st.button("Delete Context Document", key="purge_memory"):
         purge_persistent_memory()
-        logger.info("Persistent memory purged by user.")
-        st.success("Persistent memory has been purged.")
+        logger.info("Context document deleted by user.")
+        st.success("Context document has been deleted.")
 
     if st.button("Reset All Documents & Chat", key="reset_doc_chat_button"):
         logger.info("Resetting all documents and chat.")
@@ -306,7 +369,7 @@ st.title("📘 MBSE: JAMA Requirement Generator")
 st.markdown("### Your AI Document Assistant")
 st.markdown("---")
 
-if st.session_state.get("context_document_loaded"):
+if st.session_state.get("allow_global_context") and st.session_state.get("context_document_loaded"):
     st.info("A context document is loaded and will be used in the session.")
 
 uploaded_files = st.file_uploader(
@@ -339,6 +402,7 @@ if uploaded_files:
 
             with st.spinner(f"Processing '{filename}'... This may take a moment."):
                 saved_path = save_uploaded_file(uploaded_file_obj, PDF_STORAGE_PATH)
+                # saved_path = save_uploaded_file(uploaded_file_obj, PDF_STORAGE_PATH, allow_context=False)
                 if saved_path:
                     logger.info(f"File '{filename}' saved to '{saved_path}'")
                     raw_docs_from_file = load_document(saved_path)
@@ -469,10 +533,12 @@ if st.session_state.document_processed:
                 formatted_history = "\n".join(history_lines)
                 logger.debug(f"Formatted history for prompt: {formatted_history}")
 
-                # Get all chunks for context
-                persistent_context = get_persistent_context(
-                    context_vector_db=st.session_state.CONTEXT_VECTOR_DB
-                )
+                persistent_context = []
+                if st.session_state.get("allow_global_context", False):
+                    persistent_context = get_persistent_context(
+                        context_vector_db=st.session_state.CONTEXT_VECTOR_DB
+                    )
+
                 requirements_chunks = get_requirements_chunks(
                     document_vector_db=st.session_state.DOCUMENT_VECTOR_DB,
                 )

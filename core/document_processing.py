@@ -5,7 +5,7 @@ from langchain_core.documents import Document as LangchainDocument
 import docx
 from docx.opc.exceptions import PackageNotFoundError as DocxPackageNotFoundError
 import pdfplumber
-from .config import PDF_STORAGE_PATH
+from .config import PDF_STORAGE_PATH, CONTEXT_PDF_STORAGE_PATH
 from .logger_config import get_logger
 from .model_loader import get_language_model
 from .generation import classify_chunk
