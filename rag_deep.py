@@ -533,11 +533,10 @@ if st.session_state.document_processed:
                 formatted_history = "\n".join(history_lines)
                 logger.debug(f"Formatted history for prompt: {formatted_history}")
 
-                persistent_context = []
-                if st.session_state.get("allow_global_context", False):
-                    persistent_context = get_persistent_context(
-                        context_vector_db=st.session_state.CONTEXT_VECTOR_DB
-                    )
+                # Get all chunks for context
+                persistent_context = get_persistent_context(
+                    context_vector_db=st.session_state.CONTEXT_VECTOR_DB
+                )
 
                 requirements_chunks = get_requirements_chunks(
                     document_vector_db=st.session_state.DOCUMENT_VECTOR_DB,
