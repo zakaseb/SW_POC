@@ -39,7 +39,7 @@ from core.document_processing import (
     chunk_documents,
     index_documents,
 )
-from core.search_pipeline import get_persistent_context, get_requirements_chunks
+from core.search_pipeline import get_persistent_context, get_general_context, get_requirements_chunks
 from core.generation import generate_answer, generate_summary, generate_keywords, generate_requirements_json, generate_excel_file
 from core.session_manager import (
     initialize_session_state,
@@ -97,10 +97,33 @@ def index_global_context_once(ctx_file: Path):
     _, _, chunks = chunk_documents(raw, str(CONTEXT_DIR), classify=False)
     if chunks:
         index_documents(chunks, vector_db=st.session_state.CONTEXT_VECTOR_DB)
+        # Persistent backup (DO NOT purge this in your reset functions)
+        index_documents(chunks, vector_db=st.session_state.PERSISTENT_VECTOR_DB)
+        logger.info(f"Global context indexed: {len(chunks)} chunks.")
         st.session_state.global_ctx_indexed_mtime = mtime
         st.session_state.context_document_loaded = True
-        logger.info(f"Global context indexed: {len(chunks)} chunks.")
 
+
+_WORD_RE = re.compile(r"[A-Za-z0-9_']+")
+
+def _tok(s: str):
+    return [w.lower() for w in _WORD_RE.findall(s or "")]
+
+def _split_paras(text: str, max_chars: int = 900, overlap: int = 120):
+    if not text:
+        return []
+    paras = [p.strip() for p in re.split(r"\n{2,}", text) if p.strip()]
+    out = []
+    for p in paras:
+        if len(p) <= max_chars:
+            out.append(p)
+        else:
+            i = 0
+            while i < len(p):
+                j = min(i + max_chars, len(p))
+                out.append(p[i:j].strip())
+                i = max(j - overlap, j)
+    return out
 
 # ---------------------------------
 # App Styling with CSS
@@ -272,18 +295,101 @@ with st.sidebar:
     if st.session_state.document_processed:
         if st.button("Generate Requirements", key="generate_requirements_button"):
             with st.spinner("Generating requirements... This might take a moment."):
+
+                # 1) Get requirement chunks
                 requirements_chunks = get_requirements_chunks(
                     document_vector_db=st.session_state.DOCUMENT_VECTOR_DB,
                 )
                 if not requirements_chunks:
                     st.sidebar.warning("No requirements chunks found to process.")
                 else:
+
+                    # 2) Get verification & general docs using YOUR functions
+                    verif_docs = get_persistent_context(
+                        context_vector_db=st.session_state.PERSISTENT_VECTOR_DB   # <- your persistent VB
+                    )
+                    general_docs = get_general_context(
+                        general_vector_db=st.session_state.GENERAL_VECTOR_DB
+                    )
+
+                    # --- NEW: Build/cache BM25 over GENERAL context paragraphs
+                    if ("GENERAL_BM25" not in st.session_state or
+                        st.session_state.get("GENERAL_BM25_count", -1) != len(general_docs)):
+                        raw_general_chunks = []
+                        for d in general_docs:
+                            if getattr(d, "page_content", None):
+                                raw_general_chunks.extend(_split_paras(d.page_content, max_chars=900, overlap=120))
+                        tokenized = [_tok(c) for c in raw_general_chunks] or [[""]]
+                        st.session_state.GENERAL_BM25 = BM25Okapi(tokenized)
+                        st.session_state.GENERAL_BM25_RAW = raw_general_chunks or [""]
+                        st.session_state.GENERAL_BM25_count = len(general_docs)
+
+                    # 3) Print/log counts 
+                    verif_count = len(verif_docs)
+                    general_count = len(general_docs)
+                    req_count = len(requirements_chunks)
+                    print(f"📄 Verification context chunks: {verif_count}")
+                    print(f"📘 General context chunks: {general_count}")
+                    print(f"🧩 Requirement chunks to process: {req_count}")
+                    st.info(f"Verification: {verif_count} | General: {general_count} | Requirements: {req_count}")
+
+                    # 4) Turn docs -> text (page_content) ONCE and reuse
+                    joiner = "\n\n---\n\n"
+                    verification_context_all = joiner.join(
+                        d.page_content.strip() for d in verif_docs if getattr(d, "page_content", None)
+                    )
+
+                    # ✅ Print only character lengths
+                    verif_chars = len(verification_context_all)
+                    print(f"Verification context length: {verif_chars} characters")
+
+                    # Safe character limit for mistral:7b (≈8k tokens × 4 chars/token)
+                    SAFE_CHAR_CAP = 32000
+                    TOP_K_GENERAL = 8  # tune 6–10
+
+                    # 5) Generate per-chunk with both contexts
                     all_requirements = []
                     for req_chunk in requirements_chunks:
+                        req_text  = (req_chunk.page_content or "")
+                        req_chars = len(req_text)
+
+                        # --- NEW: BM25 select top-k general context per requirement
+                        bm25 = st.session_state.GENERAL_BM25
+                        raw_chunks = st.session_state.GENERAL_BM25_RAW
+                        q = _tok(req_text)
+                        if q:
+                            scores = bm25.get_scores(q)
+                            top_idx = sorted(range(len(scores)), key=lambda i: scores[i], reverse=True)[:TOP_K_GENERAL]
+                            top_general_chunks = [raw_chunks[i] for i in top_idx if raw_chunks[i].strip()]
+                        else:
+                            top_general_chunks = []
+
+                        general_context_selected = joiner.join(top_general_chunks)
+                        general_chars = len(general_context_selected)
+
+                        print(f"Current requirement chunk length: {req_chars} characters")
+                        print(f"Selected {len(top_general_chunks)} general chunks; chars={general_chars}")
+
+                        total_chars = verif_chars + general_chars + req_chars
+                        print(f"Total input characters passed: {total_chars}")
+
+                        # ⚠️ Warn if nearing or exceeding safe limit
+                        if total_chars > SAFE_CHAR_CAP:
+                            msg = (
+                                f"⚠️ Possible truncation risk: {total_chars} characters "
+                                f"exceeds safe cap of {SAFE_CHAR_CAP} for mistral:7b."
+                            )
+                            print(msg)
+                            st.warning(msg)
+
                         json_response = generate_requirements_json(
-                            LANGUAGE_MODEL, req_chunk
+                            LANGUAGE_MODEL,
+                            req_chunk,
+                            verification_methods_context=verification_context_all,
+                            general_context=general_context_selected,  # <-- CHANGED (top-k only)
                         )
                         all_requirements.append(json_response)
+
                     st.session_state.generated_requirements = all_requirements
 
                     excel_data = generate_excel_file(all_requirements)
@@ -434,11 +540,11 @@ if uploaded_files:
                     st.success(f"Document chunking and classification complete. Found {len(general_context_chunks)} general context chunks and {len(requirements_chunks)} requirements chunks.")
                     logger.info(f"{total_chunks} total chunks created.")
 
-                    # Index general context chunks into the context vector DB
+                    # Index general context chunks into the general vector DB
                     if general_context_chunks:
                         st.session_state.general_context_chunks = general_context_chunks
                         logger.debug("Starting indexing of general context chunks.")
-                        index_documents(general_context_chunks, vector_db=st.session_state.CONTEXT_VECTOR_DB)
+                        index_documents(general_context_chunks, vector_db=st.session_state.GENERAL_VECTOR_DB)
                         logger.info(f"{len(general_context_chunks)} general context chunks indexed.")
                         st.info(f"ℹ️ {len(general_context_chunks)} chunks have been added to the session's persistent memory.")
 
@@ -538,10 +644,14 @@ if st.session_state.document_processed:
                     context_vector_db=st.session_state.CONTEXT_VECTOR_DB
                 )
 
+                general_context = get_general_context(
+                    general_vector_db=st.session_state.GENERAL_VECTOR_DB
+                )
+
                 requirements_chunks = get_requirements_chunks(
                     document_vector_db=st.session_state.DOCUMENT_VECTOR_DB,
                 )
-                all_context_docs = persistent_context + requirements_chunks
+                all_context_docs = persistent_context + general_context + requirements_chunks
 
                 if not all_context_docs:
                     logger.warning("No documents found in any vector store.")

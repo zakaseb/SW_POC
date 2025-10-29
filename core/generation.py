@@ -65,7 +65,7 @@ def generate_answer(
         return f"{user_message} Please try again later or rephrase your question. (Details: {e})"
 
 
-def generate_requirements_json(language_model, requirement_chunk):
+def generate_requirements_json(language_model, requirement_chunk, verification_methods_context: str = "", general_context: str = ""):
     """
     Generates a JSON object for a single requirement chunk.
     """
@@ -79,7 +79,11 @@ def generate_requirements_json(language_model, requirement_chunk):
         prompt = ChatPromptTemplate.from_template(REQUIREMENT_JSON_PROMPT_TEMPLATE)
         response_chain = prompt | language_model
 
-        response = response_chain.invoke({"document_context": context_text})
+        response = response_chain.invoke({
+            "document_context": context_text,
+            "verification_methods_context": verification_methods_context,
+            "general_context": general_context,
+        })
 
         if not response or not response.strip():
             logger.warning("AI model returned an empty response for requirements JSON generation.")

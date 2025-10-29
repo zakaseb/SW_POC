@@ -240,7 +240,7 @@ def re_index_documents_from_session():
     # Re-index general context chunks
     if "general_context_chunks" in st.session_state and st.session_state.general_context_chunks:
         logger.info(f"Re-indexing {len(st.session_state.general_context_chunks)} general context chunks.")
-        index_documents(st.session_state.general_context_chunks, vector_db=st.session_state.CONTEXT_VECTOR_DB)
+        index_documents(st.session_state.general_context_chunks, vector_db=st.session_state.GENERAL_VECTOR_DB)
     else:
         logger.info("No general context chunks found in session state to re-index.")
 

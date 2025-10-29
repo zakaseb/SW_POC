@@ -26,6 +26,34 @@ def get_persistent_context(context_vector_db):
 
     return persistent_context
 
+def get_general_context(general_vector_db):
+    """
+    Retrieves all documents from the general vector store,
+    ensuring no duplicates and filtering out empty documents.
+    """
+    general_context = []
+    if general_vector_db:
+        try:
+            # Retrieve all documents; k=10000 acts as "fetch everything".
+            all_docs = general_vector_db.similarity_search("", k=10000)
+
+            # Filter out any documents with no actual content
+            non_empty_docs = [doc for doc in all_docs if doc.page_content]
+
+            general_context.extend(non_empty_docs)
+            logger.info(
+                f"Retrieved {len(general_context)} non-empty documents from the general vector store."
+            )
+        except Exception as e:
+            user_message = (
+                "An error occurred while retrieving documents from the general vector store."
+            )
+            logger.exception(f"{user_message} Details: {e}")
+            st.error(f"{user_message} Check logs for details.")
+
+    return general_context
+
+
 def get_requirements_chunks(document_vector_db):
     """
     Retrieves all requirements chunks. It prioritizes chunks stored in the session state

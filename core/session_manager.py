@@ -76,8 +76,13 @@ def initialize_session_state():
     """
     Initializes the session state variables if they don't exist.
     """
+    # Create a second vector DB for verification methods that you won't purge
+    if "PERSISTENT_VECTOR_DB" not in st.session_state:
+        st.session_state.PERSISTENT_VECTOR_DB = InMemoryVectorStore(get_embedding_model())
     if "CONTEXT_VECTOR_DB" not in st.session_state:
         st.session_state.CONTEXT_VECTOR_DB = InMemoryVectorStore(get_embedding_model())
+    if "GENERAL_VECTOR_DB" not in st.session_state:
+        st.session_state.GENERAL_VECTOR_DB = InMemoryVectorStore(get_embedding_model())
     if "DOCUMENT_VECTOR_DB" not in st.session_state:
         st.session_state.DOCUMENT_VECTOR_DB = InMemoryVectorStore(get_embedding_model())
     if "messages" not in st.session_state:
