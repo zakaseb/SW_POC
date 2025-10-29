@@ -13,8 +13,11 @@ from core.logger_config import setup_logging, get_logger
 setup_logging()  # Initialize logging system
 logger = get_logger(__name__)
 
+from pathlib import Path
+import shutil
 
 # Import from new core modules
+from core.auth import show_login_form
 from core.config import (
     MAX_HISTORY_TURNS,
     # K_SEMANTIC, # Removed as it's used in core.search_pipeline
@@ -36,15 +39,91 @@ from core.document_processing import (
     chunk_documents,
     index_documents,
 )
-from core.search_pipeline import get_persistent_context, get_requirements_chunks
-from core.generation import generate_answer, generate_summary, generate_keywords, generate_requirements_json
+from core.search_pipeline import get_persistent_context, get_general_context, get_requirements_chunks
+from core.generation import generate_answer, generate_summary, generate_keywords, generate_requirements_json, generate_excel_file
 from core.session_manager import (
     initialize_session_state,
     reset_document_states,
     reset_file_uploader,
     purge_persistent_memory,
-    save_persistent_memory,
 )
+from core.database import save_session
+from core.session_utils import package_session_for_storage
+
+# Use your existing config var
+CONTEXT_DIR = Path(CONTEXT_PDF_STORAGE_PATH).resolve()
+
+# Make TEMPLATE_DOC absolute (safer for Streamlit reruns)
+APP_ROOT = Path(__file__).resolve().parent
+TEMPLATE_DOC = (APP_ROOT / "Verification Methods.docx").resolve()
+
+
+def ensure_global_context_bootstrap() -> Path:
+    """Ensure global context dir exists and contains the default doc.
+    Returns the absolute path to the context file."""
+    CONTEXT_DIR.mkdir(parents=True, exist_ok=True)
+    dest = CONTEXT_DIR / TEMPLATE_DOC.name
+
+    if not TEMPLATE_DOC.exists():
+        logger.error(f"Template not found: {TEMPLATE_DOC}")
+        st.warning(f"Default context template not found at {TEMPLATE_DOC}")
+        return dest  # path where it would live
+
+    if not dest.exists():
+        shutil.copyfile(TEMPLATE_DOC, dest)
+        logger.info(f"Global default context copied to: {dest}")
+    else:
+        logger.info(f"Global default context already present: {dest}")
+
+    return dest
+
+
+def index_global_context_once(ctx_file: Path):
+    """Chunk + index the global context once per session or when the file changes."""
+    # do nothing if user purged this session
+    if not st.session_state.get("allow_global_context", False):
+        return
+    if not ctx_file.exists():
+        return
+
+    mtime = ctx_file.stat().st_mtime
+    if st.session_state.get("global_ctx_indexed_mtime") == mtime:
+        # already indexed this exact content
+        return
+
+    raw = load_document(str(ctx_file))
+    if not raw:
+        return
+    _, _, chunks = chunk_documents(raw, str(CONTEXT_DIR), classify=False)
+    if chunks:
+        index_documents(chunks, vector_db=st.session_state.CONTEXT_VECTOR_DB)
+        # Persistent backup (DO NOT purge this in your reset functions)
+        index_documents(chunks, vector_db=st.session_state.PERSISTENT_VECTOR_DB)
+        logger.info(f"Global context indexed: {len(chunks)} chunks.")
+        st.session_state.global_ctx_indexed_mtime = mtime
+        st.session_state.context_document_loaded = True
+
+
+_WORD_RE = re.compile(r"[A-Za-z0-9_']+")
+
+def _tok(s: str):
+    return [w.lower() for w in _WORD_RE.findall(s or "")]
+
+def _split_paras(text: str, max_chars: int = 900, overlap: int = 120):
+    if not text:
+        return []
+    paras = [p.strip() for p in re.split(r"\n{2,}", text) if p.strip()]
+    out = []
+    for p in paras:
+        if len(p) <= max_chars:
+            out.append(p)
+        else:
+            i = 0
+            while i < len(p):
+                j = min(i + max_chars, len(p))
+                out.append(p[i:j].strip())
+                i = max(j - overlap, j)
+    return out
 
 # ---------------------------------
 # App Styling with CSS
@@ -124,87 +203,27 @@ os.makedirs(PDF_STORAGE_PATH, exist_ok=True)
 logger.info(f"Ensured PDF storage directory exists: {PDF_STORAGE_PATH}")
 
 
-def generate_excel_file(requirements_json_list):
-    """
-    Parses a list of JSON strings, cleans them, and generates an Excel file in memory.
-    """
-    all_requirements = []
+if not show_login_form():
+    st.stop()
 
-    for json_str in requirements_json_list:
-        # Clean the string: remove markdown and other non-JSON artifacts
-        # This regex looks for content between ```json and ``` or just `{` and `}` or `[` and `]`
-        match = re.search(r"```json\s*([\s\S]*?)\s*```|([\s\S]*)", json_str)
-        if match:
-            cleaned_str = match.group(1) if match.group(1) is not None else match.group(2)
-            cleaned_str = cleaned_str.strip()
+# Auto-enable global context once per session after successful login
+if (st.session_state.get("authenticated")
+    and st.session_state.get("user_id")
+    and "allow_global_context" not in st.session_state):
+    st.session_state["allow_global_context"] = True     # ✅ auto ON at login
+    st.session_state["did_context_bootstrap"] = False   # allow one-time bootstrap
+    st.session_state.pop("global_ctx_indexed_mtime", None)
 
-            try:
-                # Try to parse the cleaned string
-                data = json.loads(cleaned_str)
-                if isinstance(data, list):
-                    all_requirements.extend(data)
-                elif isinstance(data, dict):
-                    all_requirements.append(data)
-            except json.JSONDecodeError:
-                logger.warning(f"Could not decode JSON from string: {cleaned_str}")
-                continue # Skip this string if it's not valid JSON
-
-    if not all_requirements:
-        return None
-
-    # Define the columns based on the JSON schema to ensure order and handle missing keys
-    columns = [
-        "Name",
-        "Description",
-        "VerificationMethod",
-        "Tags",
-        "RequirementType",
-        "DocumentRequirementID"
-    ]
-
-    # Create a DataFrame
-    df = pd.DataFrame(all_requirements)
-
-    # Ensure all columns are present, fill missing ones with empty strings
-    for col in columns:
-        if col not in df.columns:
-            df[col] = ''
-
-    # Reorder columns to match the desired schema and select only them
-    df = df[columns]
-
-    # Convert list-like columns (e.g., Tags) to a string representation
-    if 'Tags' in df.columns:
-        df['Tags'] = df['Tags'].apply(lambda x: ', '.join(x) if isinstance(x, list) else x)
-
-    # Create an in-memory Excel file
-    output = io.BytesIO()
-    with pd.ExcelWriter(output, engine='openpyxl') as writer:
-        df.to_excel(writer, index=False, sheet_name='Requirements')
-
-    processed_data = output.getvalue()
-    return processed_data
-
-
-def get_excel_download_link(excel_data):
-    """
-    Generates a link to download the given excel data.
-    """
-    b64 = base64.b64encode(excel_data).decode()
-    href = f'<a href="data:application/octet-stream;base64,{b64}" download="generated_requirements.xlsx" id="downloadLink" style="display:none">Download Excel</a>'
-    script = """
-    <script>
-        window.setTimeout(function() {
-            var link = document.getElementById('downloadLink');
-            if (link) {
-                link.click();
-            }
-        }, 200);
-    </script>
-    """
-    return href + script
-
-
+# Auto-bootstrap ONCE per session, only if allowed
+if (st.session_state.get("authenticated")
+    and st.session_state.get("user_id")
+    and st.session_state.get("allow_global_context", False)
+    and not st.session_state.get("did_context_bootstrap", False)):
+    ctx_path = ensure_global_context_bootstrap()
+    index_global_context_once(ctx_path)
+    st.session_state["did_context_bootstrap"] = True
+    st.session_state["context_document_loaded"] = True
+   
 # ---------------------------------
 # User Interface
 # ---------------------------------
@@ -213,32 +232,41 @@ with st.sidebar:
     st.image("halcon_logo.jpeg", use_container_width=True)
     st.header("Controls")
 
+    if st.button("Logout", key="logout_button"):
+        session_to_save = package_session_for_storage()
+        save_session(st.session_state.user_id, session_to_save)
+
+        st.session_state.authenticated = False
+        # Clear sensitive and user-specific keys from session state
+        for key in list(st.session_state.keys()):
+            if key not in ['authenticated']: # Keep authentication status
+                del st.session_state[key]
+
+        # Re-initialize for a clean slate, except for auth status
+        initialize_session_state()
+
+        st.rerun()
+
     st.header("Context Document")
     context_uploaded_file = st.file_uploader(
         "Upload Context Document (PDF, DOCX, TXT)",
         type=["pdf", "docx", "txt"],
         key="context_file_uploader",
     )
+
     if context_uploaded_file is not None:
-        context_file_info = {
-            "name": context_uploaded_file.name,
-            "size": context_uploaded_file.size,
-        }
+        context_file_info = {"name": context_uploaded_file.name, "size": context_uploaded_file.size}
         if context_file_info != st.session_state.get("processed_context_file_info"):
-            # Save the context document to the designated folder
-            saved_path = save_uploaded_file(
-                context_uploaded_file, CONTEXT_PDF_STORAGE_PATH
-            )
+            saved_path = save_uploaded_file(context_uploaded_file, CONTEXT_PDF_STORAGE_PATH)
             if saved_path:
-                # Process and index the context document
                 raw_docs = load_document(saved_path)
                 if raw_docs:
                     _, _, all_chunks = chunk_documents(raw_docs, CONTEXT_PDF_STORAGE_PATH, classify=False)
                     if all_chunks:
-                        index_documents(
-                            all_chunks, vector_db=st.session_state.CONTEXT_VECTOR_DB
-                        )
+                        index_documents(all_chunks, vector_db=st.session_state.CONTEXT_VECTOR_DB)
                         st.session_state.processed_context_file_info = context_file_info
+                        st.session_state.context_chunks = all_chunks
+                        st.session_state.context_document_loaded = True
                         st.success("Context document successfully uploaded!")
                     else:
                         st.error("Failed to generate chunks from the context document.")
@@ -251,10 +279,10 @@ with st.sidebar:
         st.session_state.messages = []
         logger.info("Chat history cleared by user.")
 
-    if st.button("Purge Memory", key="purge_memory"):
+    if st.button("Delete Context Document", key="purge_memory"):
         purge_persistent_memory()
-        logger.info("Persistent memory purged by user.")
-        st.success("Persistent memory has been purged.")
+        logger.info("Context document deleted by user.")
+        st.success("Context document has been deleted.")
 
     if st.button("Reset All Documents & Chat", key="reset_doc_chat_button"):
         logger.info("Resetting all documents and chat.")
@@ -267,29 +295,124 @@ with st.sidebar:
     if st.session_state.document_processed:
         if st.button("Generate Requirements", key="generate_requirements_button"):
             with st.spinner("Generating requirements... This might take a moment."):
-                st.session_state.generated_requirements = None
-                st.session_state.excel_file = None
+
+                # 1) Get requirement chunks
                 requirements_chunks = get_requirements_chunks(
                     document_vector_db=st.session_state.DOCUMENT_VECTOR_DB,
                 )
                 if not requirements_chunks:
                     st.sidebar.warning("No requirements chunks found to process.")
                 else:
+
+                    # 2) Get verification & general docs using YOUR functions
+                    verif_docs = get_persistent_context(
+                        context_vector_db=st.session_state.PERSISTENT_VECTOR_DB   # <- your persistent VB
+                    )
+                    general_docs = get_general_context(
+                        general_vector_db=st.session_state.GENERAL_VECTOR_DB
+                    )
+
+                    # --- NEW: Build/cache BM25 over GENERAL context paragraphs
+                    if ("GENERAL_BM25" not in st.session_state or
+                        st.session_state.get("GENERAL_BM25_count", -1) != len(general_docs)):
+                        raw_general_chunks = []
+                        for d in general_docs:
+                            if getattr(d, "page_content", None):
+                                raw_general_chunks.extend(_split_paras(d.page_content, max_chars=900, overlap=120))
+                        tokenized = [_tok(c) for c in raw_general_chunks] or [[""]]
+                        st.session_state.GENERAL_BM25 = BM25Okapi(tokenized)
+                        st.session_state.GENERAL_BM25_RAW = raw_general_chunks or [""]
+                        st.session_state.GENERAL_BM25_count = len(general_docs)
+
+                    # 3) Print/log counts 
+                    verif_count = len(verif_docs)
+                    general_count = len(general_docs)
+                    req_count = len(requirements_chunks)
+                    print(f"📄 Verification context chunks: {verif_count}")
+                    print(f"📘 General context chunks: {general_count}")
+                    print(f"🧩 Requirement chunks to process: {req_count}")
+                    st.info(f"Verification: {verif_count} | General: {general_count} | Requirements: {req_count}")
+
+                    # 4) Turn docs -> text (page_content) ONCE and reuse
+                    joiner = "\n\n---\n\n"
+                    verification_context_all = joiner.join(
+                        d.page_content.strip() for d in verif_docs if getattr(d, "page_content", None)
+                    )
+
+                    # ✅ Print only character lengths
+                    verif_chars = len(verification_context_all)
+                    print(f"Verification context length: {verif_chars} characters")
+
+                    # Safe character limit for mistral:7b (≈8k tokens × 4 chars/token)
+                    SAFE_CHAR_CAP = 32000
+                    TOP_K_GENERAL = 8  # tune 6–10
+
+                    # 5) Generate per-chunk with both contexts
                     all_requirements = []
                     for req_chunk in requirements_chunks:
+                        req_text  = (req_chunk.page_content or "")
+                        req_chars = len(req_text)
+
+                        # --- NEW: BM25 select top-k general context per requirement
+                        bm25 = st.session_state.GENERAL_BM25
+                        raw_chunks = st.session_state.GENERAL_BM25_RAW
+                        q = _tok(req_text)
+                        if q:
+                            scores = bm25.get_scores(q)
+                            top_idx = sorted(range(len(scores)), key=lambda i: scores[i], reverse=True)[:TOP_K_GENERAL]
+                            top_general_chunks = [raw_chunks[i] for i in top_idx if raw_chunks[i].strip()]
+                        else:
+                            top_general_chunks = []
+
+                        general_context_selected = joiner.join(top_general_chunks)
+                        general_chars = len(general_context_selected)
+
+                        print(f"Current requirement chunk length: {req_chars} characters")
+                        print(f"Selected {len(top_general_chunks)} general chunks; chars={general_chars}")
+
+                        total_chars = verif_chars + general_chars + req_chars
+                        print(f"Total input characters passed: {total_chars}")
+
+                        # ⚠️ Warn if nearing or exceeding safe limit
+                        if total_chars > SAFE_CHAR_CAP:
+                            msg = (
+                                f"⚠️ Possible truncation risk: {total_chars} characters "
+                                f"exceeds safe cap of {SAFE_CHAR_CAP} for mistral:7b."
+                            )
+                            print(msg)
+                            st.warning(msg)
+
                         json_response = generate_requirements_json(
-                            LANGUAGE_MODEL, req_chunk
+                            LANGUAGE_MODEL,
+                            req_chunk,
+                            verification_methods_context=verification_context_all,
+                            general_context=general_context_selected,  # <-- CHANGED (top-k only)
                         )
                         all_requirements.append(json_response)
+
                     st.session_state.generated_requirements = all_requirements
 
                     excel_data = generate_excel_file(all_requirements)
                     if excel_data:
-                        download_link = get_excel_download_link(excel_data)
-                        st.session_state.download_trigger = download_link
-                        st.sidebar.success("Requirements generated and Excel file is downloading!")
+                        st.session_state.excel_file_data = excel_data
+                        st.sidebar.success("Requirements generated successfully!")
+                        # Trigger auto-download
+                        b64 = base64.b64encode(excel_data).decode()
+                        href = f'<a href="data:application/octet-stream;base64,{b64}" download="generated_requirements.xlsx" id="download-link" style="display:none">Download</a>'
+                        js = '<script>document.getElementById("download-link").click()</script>'
+                        st.session_state.download_trigger = href + js
+                        st.rerun()
                     else:
                         st.sidebar.warning("Requirements generated, but no valid data was found to create an Excel file.")
+
+        if "excel_file_data" in st.session_state and st.session_state.excel_file_data:
+            st.download_button(
+                label="Download Requirements",
+                data=st.session_state.excel_file_data,
+                file_name="generated_requirements.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                key="download_requirements"
+            )
 
         if st.button(
             "Extract Keywords from Content", key="extract_keywords_content_button"
@@ -346,11 +469,13 @@ with st.sidebar:
             "Keywords:", st.session_state.document_keywords, height=100, disabled=True
         )
 
+
+
 st.title("📘 MBSE: JAMA Requirement Generator")
 st.markdown("### Your AI Document Assistant")
 st.markdown("---")
 
-if st.session_state.get("context_document_loaded"):
+if st.session_state.get("allow_global_context") and st.session_state.get("context_document_loaded"):
     st.info("A context document is loaded and will be used in the session.")
 
 uploaded_files = st.file_uploader(
@@ -383,6 +508,7 @@ if uploaded_files:
 
             with st.spinner(f"Processing '{filename}'... This may take a moment."):
                 saved_path = save_uploaded_file(uploaded_file_obj, PDF_STORAGE_PATH)
+                # saved_path = save_uploaded_file(uploaded_file_obj, PDF_STORAGE_PATH, allow_context=False)
                 if saved_path:
                     logger.info(f"File '{filename}' saved to '{saved_path}'")
                     raw_docs_from_file = load_document(saved_path)
@@ -414,24 +540,22 @@ if uploaded_files:
                     st.success(f"Document chunking and classification complete. Found {len(general_context_chunks)} general context chunks and {len(requirements_chunks)} requirements chunks.")
                     logger.info(f"{total_chunks} total chunks created.")
 
-                    # Index general context chunks into the context vector DB
+                    # Index general context chunks into the general vector DB
                     if general_context_chunks:
                         st.session_state.general_context_chunks = general_context_chunks
                         logger.debug("Starting indexing of general context chunks.")
-                        index_documents(general_context_chunks, vector_db=st.session_state.CONTEXT_VECTOR_DB)
+                        index_documents(general_context_chunks, vector_db=st.session_state.GENERAL_VECTOR_DB)
                         logger.info(f"{len(general_context_chunks)} general context chunks indexed.")
                         st.info(f"ℹ️ {len(general_context_chunks)} chunks have been added to the session's persistent memory.")
 
                     # Index requirements chunks into the main document vector DB
                     if requirements_chunks:
+                        st.session_state.requirements_chunks = requirements_chunks
                         logger.debug("Starting indexing of requirements chunks.")
                         index_documents(requirements_chunks, vector_db=st.session_state.DOCUMENT_VECTOR_DB)
                         logger.info(f"{len(requirements_chunks)} requirements chunks indexed.")
 
-                    # Set document_processed flag to true if any chunk was processed
-                    st.session_state.document_processed = True
-
-                    if st.session_state.document_processed:
+                    if st.session_state.get("document_processed", False):
                         logger.info("Vector indexing successful for one or both chunk types.")
                         try:
                             logger.debug("Starting BM25 indexing on requirements chunks.")
@@ -463,6 +587,7 @@ if uploaded_files:
             st.warning("Although files were uploaded, none could be successfully processed. Please check file formats and content.")
     else:
         logger.info("Uploaded files are the same as the ones already processed. Skipping reprocessing.")
+
 
 if st.session_state.get("uploaded_filenames") and st.session_state.get(
     "document_processed"
@@ -516,13 +641,17 @@ if st.session_state.document_processed:
 
                 # Get all chunks for context
                 persistent_context = get_persistent_context(
-                    context_vector_db=st.session_state.CONTEXT_VECTOR_DB,
-                    general_context_chunks=st.session_state.get("general_context_chunks", []),
+                    context_vector_db=st.session_state.CONTEXT_VECTOR_DB
                 )
+
+                general_context = get_general_context(
+                    general_vector_db=st.session_state.GENERAL_VECTOR_DB
+                )
+
                 requirements_chunks = get_requirements_chunks(
                     document_vector_db=st.session_state.DOCUMENT_VECTOR_DB,
                 )
-                all_context_docs = persistent_context + requirements_chunks
+                all_context_docs = persistent_context + general_context + requirements_chunks
 
                 if not all_context_docs:
                     logger.warning("No documents found in any vector store.")
@@ -547,7 +676,6 @@ if st.session_state.document_processed:
                 {"role": "assistant", "content": ai_response, "avatar": "🤖"}
             )
             st.session_state.memory.append({"role": "assistant", "content": ai_response})
-            save_persistent_memory()
             with st.chat_message("assistant", avatar="🤖"):
                 st.write(ai_response)
 else:

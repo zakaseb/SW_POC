@@ -5,7 +5,7 @@ from langchain_core.documents import Document as LangchainDocument
 import docx
 from docx.opc.exceptions import PackageNotFoundError as DocxPackageNotFoundError
 import pdfplumber
-from .config import PDF_STORAGE_PATH
+from .config import PDF_STORAGE_PATH, CONTEXT_PDF_STORAGE_PATH
 from .logger_config import get_logger
 from .model_loader import get_language_model
 from .generation import classify_chunk
@@ -228,3 +228,34 @@ def index_documents(document_chunks, vector_db=None):
         logger.exception(f"{user_message} Details: {e}")
         st.error(f"{user_message} Check logs for details.")
         st.session_state.document_processed = False
+
+
+def re_index_documents_from_session():
+    """
+    Re-indexes documents from chunks stored in the session state.
+    This is used to repopulate in-memory vector databases after a session is loaded.
+    """
+    logger.info("Attempting to re-index documents from session state.")
+
+    # Re-index general context chunks
+    if "general_context_chunks" in st.session_state and st.session_state.general_context_chunks:
+        logger.info(f"Re-indexing {len(st.session_state.general_context_chunks)} general context chunks.")
+        index_documents(st.session_state.general_context_chunks, vector_db=st.session_state.GENERAL_VECTOR_DB)
+    else:
+        logger.info("No general context chunks found in session state to re-index.")
+
+    # Re-index requirements chunks
+    if "requirements_chunks" in st.session_state and st.session_state.requirements_chunks:
+        logger.info(f"Re-indexing {len(st.session_state.requirements_chunks)} requirements chunks.")
+        index_documents(st.session_state.requirements_chunks, vector_db=st.session_state.DOCUMENT_VECTOR_DB)
+    else:
+        logger.info("No requirements chunks found in session state to re-index.")
+
+    # Re-index standalone context chunks
+    if "context_chunks" in st.session_state and st.session_state.context_chunks:
+        logger.info(f"Re-indexing {len(st.session_state.context_chunks)} standalone context chunks.")
+        index_documents(st.session_state.context_chunks, vector_db=st.session_state.CONTEXT_VECTOR_DB)
+        # Also ensure the loaded flag is set if we are re-indexing its chunks
+        st.session_state.context_document_loaded = True
+    else:
+        logger.info("No standalone context chunks found in session state to re-index.")

@@ -2,51 +2,97 @@ import streamlit as st
 from langchain_core.vectorstores import InMemoryVectorStore
 from .model_loader import get_embedding_model
 from .logger_config import get_logger
+from .database import delete_session
 import os
-import json
-from .config import MEMORY_FILE_PATH
+from .document_processing import load_document, chunk_documents, index_documents
+from .config import CONTEXT_PDF_STORAGE_PATH
+from pathlib import Path
+import shutil
 
 logger = get_logger(__name__)
 
-
-def load_persistent_memory():
-    """Loads the persistent memory from the file into the session state."""
-    if os.path.exists(MEMORY_FILE_PATH):
-        with open(MEMORY_FILE_PATH, "r") as f:
-            st.session_state.memory = json.load(f)
-    else:
-        st.session_state.memory = []
-
-
-def save_persistent_memory():
-    """Saves the session state's memory to the file."""
-    os.makedirs(os.path.dirname(MEMORY_FILE_PATH), exist_ok=True)
-    with open(MEMORY_FILE_PATH, "w") as f:
-        json.dump(st.session_state.memory, f)
-
-
 def purge_persistent_memory():
-    """Purges the persistent memory file."""
-    if os.path.exists(MEMORY_FILE_PATH):
-        os.remove(MEMORY_FILE_PATH)
-    st.session_state.memory = []
+    """
+    Purge persistent chat state for the current user and reset ONLY the context
+    document (and its vector base). General document VB(s) are preserved.
+    """
+    user_id = st.session_state.get("user_id")
+    if not user_id:
+        logger.warning("Attempted to purge memory without a user_id in session.")
+        st.error("Cannot purge memory: User not identified.")
+        return
 
+    # 1) Delete the session from the persistent database (chat history, etc.)
+    try:
+        delete_session(user_id)
+        logger.info(f"Successfully purged persistent session data for user_id: {user_id}.")
+    except Exception as e:
+        logger.exception(f"Failed to purge session for user_id: {user_id}. Error: {e}")
+        st.error("Failed to purge persistent memory from the database.")
+        return
+
+    # 2) Reset in-memory chat state ONLY (do not touch general doc VB)
+    st.session_state.memory = []
+    st.session_state["chat_history"] = []
+
+    # 3) Reset CONTEXT doc state & CONTEXT VB (keep GENERAL VB intact)
+    try:
+        embedding_model = st.session_state.get("EMBEDDING_MODEL") or get_embedding_model()
+        st.session_state.CONTEXT_VECTOR_DB = InMemoryVectorStore(embedding_model)
+    except Exception as e:
+        logger.warning(f"Could not reset CONTEXT_VECTOR_DB cleanly: {e}")
+
+    st.session_state.context_document_loaded = False
+    st.session_state.processed_context_file_info = None
+    st.session_state.context_chunks = []
+
+    # IMPORTANT: prevent auto-bootstrap right after purge
+    st.session_state["allow_global_context"] = False
+    st.session_state["did_context_bootstrap"] = True   # block the auto-load block
+    st.session_state.pop("global_ctx_indexed_mtime", None)
+
+    # Clear the context uploader widget state (prevents ghost file)
+    st.session_state.pop("context_file_uploader", None)
+
+    # 4) Delete the global fixed context docs on disk (once)
+    try:
+        ctx_dir = Path(CONTEXT_PDF_STORAGE_PATH)
+        if ctx_dir.exists():
+            for p in ctx_dir.iterdir():
+                try:
+                    if p.is_file() or p.is_symlink():
+                        p.unlink()
+                    else:
+                        shutil.rmtree(p)
+                    logger.info(f"Removed context file/folder: {p}")
+                except Exception as e:
+                    logger.exception(f"Failed to remove {p}: {e}")
+    except Exception as e:
+        logger.exception(f"Failed while cleaning context directory: {e}")
+
+    logger.info(f"In-memory session state reset (chat cleared, context purged) for user_id: {user_id}.")
 
 def initialize_session_state():
     """
     Initializes the session state variables if they don't exist.
     """
+    # Create a second vector DB for verification methods that you won't purge
+    if "PERSISTENT_VECTOR_DB" not in st.session_state:
+        st.session_state.PERSISTENT_VECTOR_DB = InMemoryVectorStore(get_embedding_model())
     if "CONTEXT_VECTOR_DB" not in st.session_state:
         st.session_state.CONTEXT_VECTOR_DB = InMemoryVectorStore(get_embedding_model())
+    if "GENERAL_VECTOR_DB" not in st.session_state:
+        st.session_state.GENERAL_VECTOR_DB = InMemoryVectorStore(get_embedding_model())
     if "DOCUMENT_VECTOR_DB" not in st.session_state:
         st.session_state.DOCUMENT_VECTOR_DB = InMemoryVectorStore(get_embedding_model())
     if "messages" not in st.session_state:
         st.session_state.messages = []
     if "memory" not in st.session_state:
-        load_persistent_memory()
+        st.session_state.memory = []
     if "document_processed" not in st.session_state:
         st.session_state.document_processed = False
-    load_context_document()
+    if "context_document_loaded" not in st.session_state:
+        st.session_state.context_document_loaded = False
     if "uploaded_file_key" not in st.session_state:
         st.session_state.uploaded_file_key = 0
     if "uploaded_filenames" not in st.session_state:
@@ -67,54 +113,36 @@ def initialize_session_state():
         st.session_state.bm25_corpus_chunks = []
 
 
-def load_context_document():
-    """Loads the context document at startup."""
-    from .document_processing import load_document, chunk_documents, index_documents
-    from .config import CONTEXT_PDF_STORAGE_PATH
-
-    if "context_document_loaded" not in st.session_state:
-        st.session_state.context_document_loaded = False
-
-    if not st.session_state.context_document_loaded:
-        if os.path.exists(CONTEXT_PDF_STORAGE_PATH):
-            for filename in os.listdir(CONTEXT_PDF_STORAGE_PATH):
-                file_path = os.path.join(CONTEXT_PDF_STORAGE_PATH, filename)
-                if os.path.isfile(file_path):
-                    raw_docs = load_document(file_path)
-                    if raw_docs:
-                        _, _, all_chunks = chunk_documents(raw_docs, CONTEXT_PDF_STORAGE_PATH, classify=False)
-                        if all_chunks:
-                                index_documents(
-                                all_chunks, vector_db=st.session_state.CONTEXT_VECTOR_DB
-                                )
-                                st.session_state.context_document_loaded = True
-                                logger.info(f"Context document '{filename}' loaded and indexed.")
-                        else:
-                            logger.warning(
-                                f"No chunks generated from context document '{filename}'."
-                            )
-                    else:
-                        logger.warning(
-                            f"Could not load context document '{filename}'."
-                        )
-
-
 def reset_document_states(clear_chat=True):
     """
     Resets all document-related session state variables.
     Optionally clears chat history.
     """
+    # Re-initialize vector stores
     st.session_state.DOCUMENT_VECTOR_DB = InMemoryVectorStore(get_embedding_model())
+
+    # Reset file processing info
     st.session_state.document_processed = False
-    if clear_chat:
-        st.session_state.messages = []
-    # uploaded_file_key is typically incremented where this is called, if needed for uploader reset
+    st.session_state.processed_files_info = {}
     st.session_state.uploaded_filenames = []
     st.session_state.raw_documents = []
+
+    # Reset generated content
     st.session_state.document_summary = None
     st.session_state.document_keywords = None
+    st.session_state.generated_requirements = None
+    st.session_state.excel_file_data = None
+
+    # Reset chunks and search indices
+    st.session_state.general_context_chunks = []
+    st.session_state.requirements_chunks = []
     st.session_state.bm25_index = None
     st.session_state.bm25_corpus_chunks = []
+
+    # Optionally clear chat history
+    if clear_chat:
+        st.session_state.messages = []
+
     logger.info("Document states reset.")
 
 

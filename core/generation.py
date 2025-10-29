@@ -1,4 +1,8 @@
 import streamlit as st
+import pandas as pd
+import json
+import io
+import re
 from langchain_core.prompts import ChatPromptTemplate
 from .config import (
     GENERAL_QA_PROMPT_TEMPLATE,
@@ -61,7 +65,7 @@ def generate_answer(
         return f"{user_message} Please try again later or rephrase your question. (Details: {e})"
 
 
-def generate_requirements_json(language_model, requirement_chunk):
+def generate_requirements_json(language_model, requirement_chunk, verification_methods_context: str = "", general_context: str = ""):
     """
     Generates a JSON object for a single requirement chunk.
     """
@@ -75,7 +79,11 @@ def generate_requirements_json(language_model, requirement_chunk):
         prompt = ChatPromptTemplate.from_template(REQUIREMENT_JSON_PROMPT_TEMPLATE)
         response_chain = prompt | language_model
 
-        response = response_chain.invoke({"document_context": context_text})
+        response = response_chain.invoke({
+            "document_context": context_text,
+            "verification_methods_context": verification_methods_context,
+            "general_context": general_context,
+        })
 
         if not response or not response.strip():
             logger.warning("AI model returned an empty response for requirements JSON generation.")
@@ -193,3 +201,65 @@ def generate_keywords(language_model, full_document_text):
             f"An error occurred while extracting keywords using the AI model. Details: {e}"
         )
         return f"{user_message} Please try again later. (Details: {e})"
+
+
+def generate_excel_file(requirements_json_list):
+    """
+    Parses a list of JSON strings, cleans them, and generates an Excel file in memory.
+    """
+    all_requirements = []
+
+    for json_str in requirements_json_list:
+        # Clean the string: remove markdown and other non-JSON artifacts
+        # This regex looks for content between ```json and ``` or just `{` and `}` or `[` and `]`
+        match = re.search(r"```json\s*([\s\S]*?)\s*```|([\s\S]*)", json_str)
+        if match:
+            cleaned_str = match.group(1) if match.group(1) is not None else match.group(2)
+            cleaned_str = cleaned_str.strip()
+
+            try:
+                # Try to parse the cleaned string
+                data = json.loads(cleaned_str)
+                if isinstance(data, list):
+                    all_requirements.extend(data)
+                elif isinstance(data, dict):
+                    all_requirements.append(data)
+            except json.JSONDecodeError:
+                logger.warning(f"Could not decode JSON from string: {cleaned_str}")
+                continue # Skip this string if it's not valid JSON
+
+    if not all_requirements:
+        return None
+
+    # Define the columns based on the JSON schema to ensure order and handle missing keys
+    columns = [
+        "Name",
+        "Description",
+        "VerificationMethod",
+        "Tags",
+        "RequirementType",
+        "DocumentRequirementID"
+    ]
+
+    # Create a DataFrame
+    df = pd.DataFrame(all_requirements)
+
+    # Ensure all columns are present, fill missing ones with empty strings
+    for col in columns:
+        if col not in df.columns:
+            df[col] = ''
+
+    # Reorder columns to match the desired schema and select only them
+    df = df[columns]
+
+    # Convert list-like columns (e.g., Tags) to a string representation
+    if 'Tags' in df.columns:
+        df['Tags'] = df['Tags'].apply(lambda x: ', '.join(x) if isinstance(x, list) else x)
+
+    # Create an in-memory Excel file
+    output = io.BytesIO()
+    with pd.ExcelWriter(output, engine='openpyxl') as writer:
+        df.to_excel(writer, index=False, sheet_name='Requirements')
+
+    processed_data = output.getvalue()
+    return processed_data

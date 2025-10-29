@@ -85,6 +85,14 @@ Now, analyze the following text chunk and extract the requirements.
 Text Chunk:
 {document_context}
 
+Additional reference materials you MUST use while generating/validating requirements:
+
+- Verification Methods (fixed offline reference; use this first to determine 'VerificationMethod'):
+{verification_methods_context}
+
+- General Context (persistent knowledge; use this to clarify terms, interfaces, and constraints):
+{general_context}
+
 JSON Output:
 """
 
