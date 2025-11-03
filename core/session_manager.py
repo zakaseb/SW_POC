@@ -105,8 +105,6 @@ def initialize_session_state():
         st.session_state.processed_context_file_info = None
     if "document_summary" not in st.session_state:
         st.session_state.document_summary = None
-    if "document_keywords" not in st.session_state:
-        st.session_state.document_keywords = None
     if "bm25_index" not in st.session_state:
         st.session_state.bm25_index = None
     if "bm25_corpus_chunks" not in st.session_state:
@@ -129,7 +127,6 @@ def reset_document_states(clear_chat=True):
 
     # Reset generated content
     st.session_state.document_summary = None
-    st.session_state.document_keywords = None
     st.session_state.generated_requirements = None
     st.session_state.excel_file_data = None
 

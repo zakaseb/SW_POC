@@ -169,40 +169,6 @@ def classify_chunk(language_model, chunk_text):
         return "Requirements"
 
 
-def generate_keywords(language_model, full_document_text):
-    """
-    Generates keywords for the given document text.
-    """
-    if not full_document_text or not full_document_text.strip():
-        logger.warning("generate_keywords called with empty document text.")
-        st.warning(
-            "Document content is empty or contains only whitespace. Cannot extract keywords."
-        )
-        return None
-    logger.info("Generating keywords...")
-    try:
-        keywords_prompt = ChatPromptTemplate.from_template(
-            KEYWORD_EXTRACTION_PROMPT_TEMPLATE
-        )
-        keywords_chain = keywords_prompt | language_model
-        keywords = keywords_chain.invoke({"document_text": full_document_text})
-        if not keywords or not keywords.strip():
-            logger.warning("AI model returned no keywords.")
-            st.warning(
-                "The AI model returned no keywords. The document might be too short or lack distinct terms."
-            )
-            return None
-        logger.info("Keywords generated successfully.")
-        return keywords
-    except Exception as e:
-        user_message = "Failed to extract keywords due to an AI model error."
-        logger.exception(f"Error during keyword generation: {e}")
-        st.error(
-            f"An error occurred while extracting keywords using the AI model. Details: {e}"
-        )
-        return f"{user_message} Please try again later. (Details: {e})"
-
-
 def generate_excel_file(requirements_json_list):
     """
     Parses a list of JSON strings, cleans them, and generates an Excel file in memory.

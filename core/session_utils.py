@@ -9,7 +9,6 @@ PERSISTENT_KEYS = [
     "raw_documents",
     "uploaded_filenames",
     "processed_files_info",
-    "document_keywords",
     "generated_requirements",
     "document_processed",
     "bm25_index",
