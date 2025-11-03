@@ -40,7 +40,7 @@ from core.document_processing import (
     index_documents,
 )
 from core.search_pipeline import get_persistent_context, get_general_context, get_requirements_chunks
-from core.generation import generate_answer, generate_summary, generate_keywords, generate_requirements_json, generate_excel_file
+from core.generation import generate_answer, generate_requirements_json, generate_excel_file
 from core.session_manager import (
     initialize_session_state,
     reset_document_states,
@@ -413,38 +413,6 @@ with st.sidebar:
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 key="download_requirements"
             )
-
-        if st.button(
-            "Extract Keywords from Content", key="extract_keywords_content_button"
-        ):
-            if st.session_state.raw_documents:
-                with st.spinner("Extracting keywords from all documents..."):
-                    full_text = "\n\n".join(
-                        [doc.page_content for doc in st.session_state.raw_documents]
-                    )
-                    if not full_text.strip():
-                        st.sidebar.warning(
-                            "Cannot extract keywords: Combined content of documents is effectively empty."
-                        )
-                        logger.warning(
-                            "Keyword extraction attempt on empty combined content."
-                        )
-                        st.session_state.document_keywords = None
-                    else:
-                        logger.info("Extracting keywords from combined content.")
-                        keywords_text = generate_keywords(LANGUAGE_MODEL, full_text)
-                        st.session_state.document_keywords = keywords_text
-                        if "Failed to extract keywords" in (keywords_text or ""):
-                            logger.error(f"Keyword extraction failed: {keywords_text}")
-                        else:
-                            logger.info("Keywords extracted successfully.")
-            else:
-                st.sidebar.error(
-                    "Cannot extract keywords: Document content not loaded or available."
-                )
-                logger.warning(
-                    "Keyword extraction attempt with no raw documents loaded."
-                )
 
     if st.session_state.get("generated_requirements"):
         st.sidebar.markdown("---")
