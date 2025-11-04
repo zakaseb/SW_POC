@@ -427,17 +427,6 @@ with st.sidebar:
             # The download will now be triggered automatically.
             pass
 
-    if (
-        st.session_state.document_keywords
-        and "Failed to extract keywords" not in st.session_state.document_keywords
-    ):
-        st.sidebar.markdown("---")
-        st.sidebar.subheader("🔑 Extracted Keywords (Combined)")
-        st.sidebar.text_area(
-            "Keywords:", st.session_state.document_keywords, height=100, disabled=True
-        )
-
-
 
 st.title("📘 MBSE: JAMA Requirement Generator")
 st.markdown("### Your AI Document Assistant")
