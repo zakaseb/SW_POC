@@ -15,6 +15,7 @@ from .logger_config import get_logger
 
 logger = get_logger(__name__)
 
+conversation_prompt = ChatPromptTemplate.from_template(GENERAL_QA_PROMPT_TEMPLATE)
 
 def generate_answer(
     language_model,
@@ -23,29 +24,27 @@ def generate_answer(
     conversation_history="",
     persistent_memory="",
 ):
-    """
-    Generate an answer based on the user query, context documents, and conversation history.
-    """
     if not user_query or not user_query.strip():
         logger.warning("generate_answer called with empty user_query.")
         return "Your question is empty. Please type a question to get an answer."
 
-    if not context_documents or not isinstance(context_documents, list) or len(context_documents) == 0:
+    if not context_documents or not isinstance(context_documents, list):
         logger.warning("generate_answer called with no context documents.")
-        return "I couldn't find relevant information in the document to answer your query. Please try rephrasing your question or ensure the document contains the relevant topics."
+        return ("I couldn't find relevant information in the document to answer your query. "
+                "Please try rephrasing your question or ensure the document contains the relevant topics.")
 
     logger.info(f"Generating answer for query: '{user_query[:50]}...'")
     try:
         context_text = "\n\n".join([doc.page_content for doc in context_documents])
         if not context_text.strip():
             logger.warning("Context text for answer generation is empty after joining docs.")
-            return "The relevant sections found in the document appear to be empty. Cannot generate an answer."
+            return ("The relevant sections found in the document appear to be empty. "
+                    "Cannot generate an answer.")
 
-        logger.debug(f"Context for prompt: {context_text[:100]}...")
-        conversation_prompt = ChatPromptTemplate.from_template(GENERAL_QA_PROMPT_TEMPLATE)
-        response_chain = conversation_prompt | language_model
+        # Always returns a str (no AIMessage)
+        response_chain = conversation_prompt | language_model | StrOutputParser()
 
-        response = response_chain.invoke(
+        response: str = response_chain.invoke(
             {
                 "user_query": user_query,
                 "document_context": context_text,
@@ -54,47 +53,61 @@ def generate_answer(
             }
         )
 
-        if not response or not response.strip():
+        response = (response or "").strip()
+        if not response:
             logger.warning("AI model returned an empty response for answer generation.")
-            return "The AI model returned an empty response. Please try rephrasing your question or try again later."
+            return ("The AI model returned an empty response. Please rephrase your question or try again later.")
+
         logger.info("Answer generated successfully.")
         return response
+
     except Exception as e:
         user_message = "I'm sorry, but I encountered an error while trying to generate a response."
         logger.exception(f"Error during answer generation: {e}")
         return f"{user_message} Please try again later or rephrase your question. (Details: {e})"
+    
+_req_prompt = ChatPromptTemplate.from_template(REQUIREMENT_JSON_PROMPT_TEMPLATE)
+# build the chain once at module load (reuse it)
+# you may want to inject language_model later if it’s created lazily
+def _req_chain(language_model):
+    return _req_prompt | language_model | StrOutputParser()
 
-
-def generate_requirements_json(language_model, requirement_chunk, verification_methods_context: str = "", general_context: str = ""):
-    """
-    Generates a JSON object for a single requirement chunk.
-    """
+def generate_requirements_json(language_model, requirement_chunk,
+                               verification_methods_context: str = "",
+                               general_context: str = ""):
     logger.info("Generating requirements JSON...")
     try:
-        context_text = requirement_chunk.page_content
+        context_text = getattr(requirement_chunk, "page_content", "") or ""
         if not context_text.strip():
             logger.warning("generate_requirements_json called with empty chunk text.")
             return "{}"
 
-        prompt = ChatPromptTemplate.from_template(REQUIREMENT_JSON_PROMPT_TEMPLATE)
-        response_chain = prompt | language_model
-
-        response = response_chain.invoke({
+        response = _req_chain(language_model).invoke({
             "document_context": context_text,
-            "verification_methods_context": verification_methods_context,
-            "general_context": general_context,
-        })
+            "verification_methods_context": verification_methods_context or "",
+            "general_context": general_context or "",
+        })  # response is str
 
-        if not response or not response.strip():
+        cleaned = (response or "").strip()
+        if not cleaned:
             logger.warning("AI model returned an empty response for requirements JSON generation.")
             return "{}"
-        logger.info("Requirements JSON generated successfully.")
-        return response
+
+        m = re.search(r"\{[\s\S]*\}", cleaned)
+        json_candidate = m.group(0) if m else cleaned
+
+        try:
+            json.loads(json_candidate)
+            logger.info("Requirements JSON generated successfully.")
+            return json_candidate
+        except Exception:
+            logger.warning("Model output was not valid JSON; returning raw cleaned text.")
+            return cleaned
+
     except Exception as e:
         user_message = "I'm sorry, but I encountered an error while trying to generate the requirements JSON."
         logger.exception(f"Error during requirements JSON generation: {e}")
         return f"{{ 'error': '{user_message}', 'details': '{e}' }}"
-
 
 def generate_summary(language_model, full_document_text):
     """
@@ -128,44 +141,32 @@ def generate_summary(language_model, full_document_text):
         return f"{user_message} Please try again later. (Details: {e})"
 
 
+from langchain_core.output_parsers import StrOutputParser
+
+classification_prompt = ChatPromptTemplate.from_template(CHUNK_CLASSIFICATION_PROMPT_TEMPLATE)
+# build once and reuse:
+# classification_chain = classification_prompt | language_model | StrOutputParser()
+
 def classify_chunk(language_model, chunk_text):
-    """
-    Classifies a text chunk as 'General Context' or 'Requirements'.
-    """
     if not chunk_text or not chunk_text.strip():
         logger.warning("classify_chunk called with empty chunk_text.")
-        return "Requirements"  # Default classification
+        return "Requirements"
 
     logger.debug(f"Classifying chunk: '{chunk_text[:50]}...'")
     try:
-        classification_prompt = ChatPromptTemplate.from_template(
-            CHUNK_CLASSIFICATION_PROMPT_TEMPLATE
-        )
-        classification_chain = classification_prompt | language_model
-        response = classification_chain.invoke({"chunk_text": chunk_text})
+        chain = classification_prompt | language_model | StrOutputParser()
+        response = chain.invoke({"chunk_text": chunk_text})   # response is str now
 
-        if not response or not response.strip():
-            logger.warning("AI model returned an empty response for chunk classification.")
-            return "Requirements"  # Default classification
-
-        #The model's output might have newlines or extra spaces.
-        cleaned_response = response.strip()
-
+        cleaned_response = (response or "").strip()
         if "General Context" in cleaned_response:
-            logger.info("Chunk classified as General Context.")
             return "General Context"
-        elif "Requirements" in cleaned_response:
-            logger.info("Chunk classified as Requirements.")
+        if "Requirements" in cleaned_response:
             return "Requirements"
-        else:
-            logger.warning(
-                f"Unexpected response from AI model during chunk classification: '{cleaned_response}'"
-            )
-            return "Requirements"  # Default to 'Requirements'
 
+        logger.warning(f"Unexpected response from AI model during chunk classification: '{cleaned_response}'")
+        return "Requirements"
     except Exception as e:
         logger.exception(f"Error during chunk classification: {e}")
-        # In case of an error, default to 'Requirements' to be safe.
         return "Requirements"
 
 

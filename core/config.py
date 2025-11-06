@@ -1,4 +1,5 @@
 import os
+from openai import OpenAI
 
 # Global Application Constants
 MAX_HISTORY_TURNS = (
@@ -56,7 +57,7 @@ Tags: In the case where there is a TBD or TBC in the description, add the tag 'T
    this column for a requirement.
 Requirement Type: Please classify the requirement as one of the following - 'Functional', 
    'Interface' or 'Constraint'
-Document Requirement ID: This should be the randomised alphanumerical requirement ID of each requirement.
+Document Requirement ID: This should be the unique randomised alphanumerical requirement ID of each requirement.
 
 When extracting the requirements, please ensure that the following are adhered to: 
 1. Requirements are verifiable.
@@ -163,14 +164,22 @@ Text Chunk:
 Classification:
 """
 
-# Model Names
-OLLAMA_EMBEDDING_MODEL_NAME = os.getenv(
-    "OLLAMA_EMBEDDING_MODEL_NAME", "mistral:7b"
-)
-OLLAMA_LLM_NAME = os.getenv("OLLAMA_LLM_NAME", "mistral:7b")
-RERANKER_MODEL_NAME = os.getenv(
-    "RERANKER_MODEL_NAME", "cross-encoder/ms-marco-MiniLM-L-6-v2"
-)
+# ----------------------------
+# Model Names (LM Studio IDs)
+# Use the exact IDs shown on each LM Studio model card.
+# Example IDs (adjust to yours):
+#   LLM_MODEL_NAME:        "mistral-7b-instruct-v0.3"
+#   EMBEDDING_MODEL_NAME:  "bge-m3"
+# ----------------------------
+# ---- Model names (use LM Studio IDs) ----
+OLLAMA_LLM_NAME = os.getenv("OLLAMA_LLM_NAME", "mistral-7b-instruct-v0.3")
+# Start with a known-working embed in LM Studio:
+OLLAMA_EMBEDDING_MODEL_NAME = os.getenv("OLLAMA_EMBEDDING_MODEL_NAME", "bge-m3")
+RERANKER_MODEL_NAME = os.getenv("RERANKER_MODEL_NAME", "cross-encoder/ms-marco-MiniLM-L-6-v2")
+
+# ---- LM Studio server ----
+OPENAI_BASE_URL = os.getenv("OPENAI_BASE_URL", "http://127.0.0.1:1234/v1")
+OPENAI_API_KEY  = os.getenv("OPENAI_API_KEY", "lm-studio")
 
 # Paths and URLs
 PDF_STORAGE_PATH = os.getenv("PDF_STORAGE_PATH", "document_store/pdfs/")
@@ -178,7 +187,3 @@ CONTEXT_PDF_STORAGE_PATH = os.getenv(
     "CONTEXT_PDF_STORAGE_PATH", "document_store/context_pdfs/"
 )
 MEMORY_FILE_PATH = os.getenv("MEMORY_FILE_PATH", "document_store/memory/context.json")
-# Fetch Ollama base URL from environment variable, with a default
-OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
-
-

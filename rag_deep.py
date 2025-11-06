@@ -16,6 +16,9 @@ logger = get_logger(__name__)
 from pathlib import Path
 import shutil
 
+from dotenv import load_dotenv
+load_dotenv()  # loads ./.env
+
 # Import from new core modules
 from core.auth import show_login_form
 from core.config import (
@@ -49,6 +52,28 @@ from core.session_manager import (
 )
 from core.database import save_session
 from core.session_utils import package_session_for_storage
+
+import logging
+from core.config import OPENAI_BASE_URL, OLLAMA_LLM_NAME, OLLAMA_EMBEDDING_MODEL_NAME
+
+def _lmstudio_sanity(llm, embeds):
+    logging.getLogger().info(
+        f"[LM Studio] base_url={OPENAI_BASE_URL} "
+        f"llm={OLLAMA_LLM_NAME} emb={OLLAMA_EMBEDDING_MODEL_NAME}"
+    )
+    # Chat probe
+    try:
+        r = llm.invoke("ping")  # works with langchain_openai.ChatOpenAI
+        logging.getLogger().info(f"[LM Studio chat OK] {str(r)[:60]}")
+    except Exception as e:
+        logging.getLogger().error(f"[LM Studio chat FAIL] {e}")
+    # Embedding probe
+    try:
+        v = embeds.embed_query("probe")  # works with langchain_openai.OpenAIEmbeddings
+        logging.getLogger().info(f"[LM Studio embed OK] dim={len(v)}")
+    except Exception as e:
+        logging.getLogger().error(f"[LM Studio embed FAIL] {e}")
+
 
 # Use your existing config var
 CONTEXT_DIR = Path(CONTEXT_PDF_STORAGE_PATH).resolve()
@@ -190,6 +215,7 @@ logger.info("Loading core models.")
 EMBEDDING_MODEL = get_embedding_model()
 LANGUAGE_MODEL = get_language_model()
 RERANKER_MODEL = get_reranker_model()
+# _lmstudio_sanity(LANGUAGE_MODEL, EMBEDDING_MODEL)
 
 if not EMBEDDING_MODEL or not LANGUAGE_MODEL:
     critical_error_message = "Core models (Embedding or Language Model) failed to load. Application cannot continue. Please check Ollama connection and settings."

@@ -5,7 +5,13 @@ from .logger_config import get_logger
 from .database import delete_session
 import os
 from .document_processing import load_document, chunk_documents, index_documents
-from .config import CONTEXT_PDF_STORAGE_PATH
+from .config import (
+    OPENAI_BASE_URL,
+    OPENAI_API_KEY,
+    OLLAMA_EMBEDDING_MODEL_NAME,   # e.g. "bge-m3" in LM Studio
+    CONTEXT_PDF_STORAGE_PATH,
+)
+
 from pathlib import Path
 import shutil
 

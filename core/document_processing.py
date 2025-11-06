@@ -17,6 +17,11 @@ from docling_core.transforms.chunker.tokenizer.huggingface import HuggingFaceTok
 from transformers import AutoTokenizer
 from urllib.parse import unquote
 
+import json
+from langchain_core.documents import Document
+from typing import Any, List, Tuple
+from langchain_core.documents import Document as LCDocument
+
 logger = get_logger(__name__)
 
 def save_uploaded_file(uploaded_file, storage_path=PDF_STORAGE_PATH):
@@ -211,24 +216,90 @@ def chunk_documents(raw_documents, storage_path=PDF_STORAGE_PATH, classify=False
         st.error("An error occurred during hybrid chunking using Docling. Check logs for details.")
         return [], [], []
 
-def index_documents(document_chunks, vector_db=None):
+
+# If you already have these helpers elsewhere, you can delete these local versions
+ALLOWED_META = (str, int, float, bool, type(None))
+
+def _to_texts_and_metas(chunks: List[Any]) -> Tuple[List[str], List[dict]]:
+    texts, metas = [], []
+    for ch in chunks or []:
+        if isinstance(ch, LCDocument):
+            t = ch.page_content
+            m = dict(ch.metadata or {})
+        elif isinstance(ch, dict):
+            t = ch.get("page_content") or ch.get("text") or ch.get("content") or ""
+            m = dict(ch.get("metadata") or {})
+        else:
+            t, m = str(ch), {}
+        t = str(t or "").strip()
+        if not t:
+            continue
+        texts.append(t)
+        metas.append(m)
+    return texts, metas
+
+def _sanitize_metadatas_json(metadatas: List[dict], n: int) -> List[dict]:
+    out = []
+    for md in metadatas or []:
+        safe = {}
+        for k, v in (md or {}).items():
+            if isinstance(v, (list, tuple, set)):
+                try: v = json.dumps(list(v), ensure_ascii=False)
+                except Exception: v = str(list(v))
+            elif isinstance(v, dict):
+                try: v = json.dumps(v, ensure_ascii=False)
+                except Exception: v = str(v)
+            elif not isinstance(v, ALLOWED_META):
+                v = str(v)
+            safe[k] = v
+        out.append(safe)
+    if len(out) < n: out.extend({} for _ in range(n - len(out)))
+    elif len(out) > n: out = out[:n]
+    return out
+
+def index_documents(document_chunks: List[Any], vector_db=None) -> int:
+    """
+    Mirror the old behavior: warn on empty, default DB from session, try/except,
+    set document_processed, but embed safely for LM Studio using add_texts.
+    """
     if not document_chunks:
         logger.warning("index_documents called with no chunks to index.")
         st.warning("No document chunks available to index.")
-        return
+        st.session_state["document_processed"] = False
+        return 0
+
     logger.info(f"Indexing {len(document_chunks)} document chunks.")
     try:
+        # Keep the same default as before (DOCUMENT_VECTOR_DB). Change to GENERAL_VECTOR_DB if you prefer.
         if vector_db is None:
-            vector_db = st.session_state.DOCUMENT_VECTOR_DB
-        vector_db.add_documents(document_chunks)
-        st.session_state.document_processed = True
+            vector_db = st.session_state.get("DOCUMENT_VECTOR_DB")
+            if vector_db is None:
+                raise RuntimeError("No vector_db provided and none found in session_state (DOCUMENT_VECTOR_DB missing).")
+
+        # --- LM Studio–safe path ---
+        texts, metas = _to_texts_and_metas(document_chunks)
+        if not texts:
+            st.session_state["document_processed"] = False
+            logger.info("All chunks were empty after coercion; nothing indexed.")
+            return 0
+
+        # guard + sanitize
+        assert all(isinstance(t, str) and t.strip() for t in texts), "Empty/non-string chunk detected"
+        metas = _sanitize_metadatas_json(metas, n=len(texts))
+
+        # CRITICAL: use add_texts so /v1/embeddings receives list[str]
+        vector_db.add_texts(texts=texts, metadatas=metas)
+
+        st.session_state["document_processed"] = True
         logger.info("Document chunks indexed successfully into vector store.")
+        return len(texts)
+
     except Exception as e:
         user_message = "An error occurred while indexing document chunks."
         logger.exception(f"{user_message} Details: {e}")
         st.error(f"{user_message} Check logs for details.")
-        st.session_state.document_processed = False
-
+        st.session_state["document_processed"] = False
+        return 0
 
 def re_index_documents_from_session():
     """

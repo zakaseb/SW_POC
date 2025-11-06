@@ -1,73 +1,66 @@
+# core/model_loader.py  (LM Studio only)
+
 import streamlit as st
-from langchain_ollama import OllamaEmbeddings
-from langchain_ollama.llms import OllamaLLM
 from sentence_transformers import CrossEncoder
+from langchain_openai import ChatOpenAI, OpenAIEmbeddings
+
+from .logger_config import get_logger
 from .config import (
-    OLLAMA_BASE_URL,
-    OLLAMA_EMBEDDING_MODEL_NAME,
+    # Keep your legacy names for convenience, but these should be LM Studio IDs
     OLLAMA_LLM_NAME,
+    OLLAMA_EMBEDDING_MODEL_NAME,
     RERANKER_MODEL_NAME,
+    # LM Studio OpenAI-compatible server
+    OPENAI_BASE_URL,
+    OPENAI_API_KEY,
 )
-from .logger_config import get_logger  # Import the logger
-import requests
 
-logger = get_logger(__name__)  # Initialize logger for this module
+logger = get_logger(__name__)
 
-
-# Cached functions to load models
 @st.cache_resource
 def get_embedding_model():
-    """Loads and caches the Ollama embedding model."""
+    """Embeddings via LM Studio (OpenAI-compatible)."""
     logger.info(
-        f"Attempting to load Embedding Model: {OLLAMA_EMBEDDING_MODEL_NAME} from: {OLLAMA_BASE_URL}"
+        f"Loading Embedding Model via LM Studio: {OLLAMA_EMBEDDING_MODEL_NAME} @ {OPENAI_BASE_URL}"
     )
     try:
-        model = OllamaEmbeddings(
-            model=OLLAMA_EMBEDDING_MODEL_NAME, base_url=OLLAMA_BASE_URL
+        return OpenAIEmbeddings(
+            base_url=OPENAI_BASE_URL,
+            api_key=OPENAI_API_KEY,
+            model=OLLAMA_EMBEDDING_MODEL_NAME,
+            check_embedding_ctx_length=False,
         )
-        logger.info(
-            f"Embedding Model {OLLAMA_EMBEDDING_MODEL_NAME} loaded successfully."
-        )
-        # Attempt a simple operation to check connectivity, if available and cheap.
-        # For OllamaEmbeddings, actual connection might be deferred.
-        # If not, error will be caught on first use in the main script.
-        return model
-    except requests.exceptions.ConnectionError as conn_err:
-        user_message = f"Failed to connect to Ollama at {OLLAMA_BASE_URL} for Embedding Model. Please ensure Ollama is running and accessible."
-        logger.error(f"{user_message} Details: {conn_err}")
-        st.error(user_message)
-        return None
     except Exception as e:
-        user_message = f"An unexpected error occurred while loading the Embedding Model ({OLLAMA_EMBEDDING_MODEL_NAME})."
         logger.exception(
-            f"{user_message} Details: {e}"
-        )  # Use logger.exception to include stack trace
-        st.error(f"{user_message} Check logs for details.")
+            f"Failed to load Embedding Model '{OLLAMA_EMBEDDING_MODEL_NAME}'. Details: {e}"
+        )
+        st.error(
+            f"Failed to load Embedding Model '{OLLAMA_EMBEDDING_MODEL_NAME}'. "
+            "Check LM Studio (Developer → Local Server) and that the model is started."
+        )
         return None
-
 
 @st.cache_resource
 def get_language_model():
-    """Loads and caches the Ollama language model."""
+    """Chat LLM via LM Studio (OpenAI-compatible)."""
     logger.info(
-        f"Attempting to load Language Model: {OLLAMA_LLM_NAME} from: {OLLAMA_BASE_URL}"
+        f"Loading LLM via LM Studio: {OLLAMA_LLM_NAME} @ {OPENAI_BASE_URL}"
     )
     try:
-        model = OllamaLLM(model=OLLAMA_LLM_NAME, base_url=OLLAMA_BASE_URL)
-        logger.info(f"Language Model {OLLAMA_LLM_NAME} loaded successfully.")
-        # Similar to embedding model, actual connection test might be deferred.
-        return model
-    except requests.exceptions.ConnectionError as conn_err:
-        user_message = f"Failed to connect to Ollama at {OLLAMA_BASE_URL} for Language Model. Please ensure Ollama is running and accessible."
-        logger.error(f"{user_message} Details: {conn_err}")
-        st.error(user_message)
-        return None
+        return ChatOpenAI(
+            base_url=OPENAI_BASE_URL,
+            api_key=OPENAI_API_KEY,
+            model=OLLAMA_LLM_NAME,
+            temperature=0.2,
+        )
     except Exception as e:
-        user_message = f"An unexpected error occurred while loading the Language Model ({OLLAMA_LLM_NAME})."
         logger.exception(
-            f"{user_message} Details: {e}"
-        )  # Use logger.exception to include stack trace
-        st.error(f"{user_message} Check logs for details.")
+            f"Failed to load Language Model '{OLLAMA_LLM_NAME}'. Details: {e}"
+        )
+        st.error(
+            f"Failed to load Language Model '{OLLAMA_LLM_NAME}'. "
+            "Check LM Studio (Developer → Local Server) and that the model is started."
+        )
         return None
 
 
