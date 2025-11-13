@@ -16,7 +16,6 @@ logger = get_logger(__name__)
 from pathlib import Path
 import shutil
 
-# Import from new core modules
 from core.auth import show_login_form
 from core.config import (
     MAX_HISTORY_TURNS,
@@ -49,6 +48,35 @@ from core.session_manager import (
 )
 from core.database import save_session
 from core.session_utils import package_session_for_storage
+
+from core.config import USE_API_WRAPPER, API_URL, OLLAMA_URL
+st.caption(f"Mode: {'WRAPPED' if USE_API_WRAPPER else 'DIRECT'} · API={API_URL} · OLLAMA={OLLAMA_URL}")
+
+import requests  
+
+def log_ui_event_to_api(event: str, metadata: dict | None = None):
+    """
+    Send a UI event to the FastAPI wrapper so it shows up in API logs.
+    """
+    if not USE_API_WRAPPER:
+        # In DIRECT mode you might skip this, or still send if you like
+        return
+
+    payload = {
+        "event": event,
+        "user_id": st.session_state.get("user_id"),
+        "metadata": metadata or {},
+    }
+
+    try:
+        requests.post(
+            f"{API_URL}/ui-event",
+            json=payload,
+            timeout=2,
+        )
+    except Exception as e:
+        # Don't break the UI if logging fails, just warn
+        logger.warning(f"Failed to send UI event to API: {e}")
 
 # Use your existing config var
 CONTEXT_DIR = Path(CONTEXT_PDF_STORAGE_PATH).resolve()
@@ -206,6 +234,10 @@ logger.info(f"Ensured PDF storage directory exists: {PDF_STORAGE_PATH}")
 if not show_login_form():
     st.stop()
 
+if st.session_state.get("authenticated") and not st.session_state.get("login_logged"):
+    log_ui_event_to_api("login_success")
+    st.session_state["login_logged"] = True
+
 # Auto-enable global context once per session after successful login
 if (st.session_state.get("authenticated")
     and st.session_state.get("user_id")
@@ -233,6 +265,7 @@ with st.sidebar:
     st.header("Controls")
 
     if st.button("Logout", key="logout_button"):
+        log_ui_event_to_api("logout_clicked")
         session_to_save = package_session_for_storage()
         save_session(st.session_state.user_id, session_to_save)
 
@@ -268,6 +301,7 @@ with st.sidebar:
                         st.session_state.context_chunks = all_chunks
                         st.session_state.context_document_loaded = True
                         st.success("Context document successfully uploaded!")
+                        log_ui_event_to_api("context_upload",{"name": context_uploaded_file.name, "size": context_uploaded_file.size},)
                     else:
                         st.error("Failed to generate chunks from the context document.")
                 else:
@@ -278,11 +312,13 @@ with st.sidebar:
     if st.button("Clear Chat History", key="clear_chat"):
         st.session_state.messages = []
         logger.info("Chat history cleared by user.")
+        log_ui_event_to_api("chat_cleared")
 
     if st.button("Delete Context Document", key="purge_memory"):
         purge_persistent_memory()
         logger.info("Context document deleted by user.")
         st.success("Context document has been deleted.")
+        log_ui_event_to_api("context_deleted")
 
     if st.button("Reset All Documents & Chat", key="reset_doc_chat_button"):
         logger.info("Resetting all documents and chat.")
@@ -290,6 +326,7 @@ with st.sidebar:
         reset_file_uploader()
         st.success("All documents and chat reset. You can now upload new documents.")
         logger.info("All documents and chat successfully reset.")
+        log_ui_event_to_api("reset_all_done")
         st.rerun()
 
     if st.session_state.document_processed:
@@ -392,10 +429,19 @@ with st.sidebar:
 
                     st.session_state.generated_requirements = all_requirements
 
+                    log_ui_event_to_api(
+                        "requirements_generated",
+                        {"count": len(all_requirements)},
+                    )
+
                     excel_data = generate_excel_file(all_requirements)
                     if excel_data:
                         st.session_state.excel_file_data = excel_data
                         st.sidebar.success("Requirements generated successfully!")
+                        log_ui_event_to_api(
+                                "requirements_generated",
+                                {"num_requirements": len(all_requirements)},
+                            )
                         # Trigger auto-download
                         b64 = base64.b64encode(excel_data).decode()
                         href = f'<a href="data:application/octet-stream;base64,{b64}" download="generated_requirements.xlsx" id="download-link" style="display:none">Download</a>'
@@ -406,13 +452,16 @@ with st.sidebar:
                         st.sidebar.warning("Requirements generated, but no valid data was found to create an Excel file.")
 
         if "excel_file_data" in st.session_state and st.session_state.excel_file_data:
-            st.download_button(
+            download_clicked = st.download_button(
                 label="Download Requirements",
                 data=st.session_state.excel_file_data,
                 file_name="generated_requirements.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 key="download_requirements"
             )
+
+            if download_clicked:
+                log_ui_event_to_api("download_requirements_clicked")
 
     if st.session_state.get("generated_requirements"):
         st.sidebar.markdown("---")
@@ -446,6 +495,11 @@ uploaded_files = st.file_uploader(
 if uploaded_files:
     current_uploaded_files_info = {f.name: f.size for f in uploaded_files}
     logger.info(f"Files uploaded: {list(current_uploaded_files_info.keys())}")
+
+    log_ui_event_to_api(
+        "files_selected",
+        {"files": current_uploaded_files_info},
+    )
 
     # Check if the uploaded files are the same as the ones already processed
     if current_uploaded_files_info != st.session_state.get("processed_files_info", {}):
@@ -524,6 +578,13 @@ if uploaded_files:
                                 display_filenames = ", ".join(st.session_state.uploaded_filenames)
                                 logger.info(f"BM25 index created for documents: {display_filenames}")
                                 st.success(f"✅ Documents ({display_filenames}) processed and indexed successfully!")
+                                log_ui_event_to_api(
+                                "documents_processed",
+                                {
+                                    "filenames": st.session_state.uploaded_filenames,
+                                    "num_general_chunks": len(general_context_chunks),
+                                    "num_requirements_chunks": len(requirements_chunks),
+                                },)
                             else:
                                 logger.info("No requirements chunks to index for BM25.")
                                 st.success("✅ Documents processed. No specific requirements chunks found for keyword search indexing.")
@@ -577,6 +638,10 @@ if st.session_state.document_processed:
     user_input = st.chat_input(chat_placeholder)
     if user_input:
         logger.info(f"User query: {user_input}")
+        log_ui_event_to_api(
+        "chat_question",
+        {"query": user_input[:200]},  # truncate for safety
+        )
         if not user_input.strip():
             st.warning("Please enter a question.")
         else:
@@ -624,6 +689,10 @@ if st.session_state.document_processed:
                         context_documents=all_context_docs,
                         conversation_history=formatted_history,
                         persistent_memory=persistent_memory_str,
+                    )
+                    log_ui_event_to_api(
+                        "chat_answer",
+                        {"answer_preview": ai_response[:200]},
                     )
 
             logger.info(

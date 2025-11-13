@@ -1,0 +1,18 @@
+### How to Run
+
+1. Pull the model (once):
+
+   ollama pull mistral:7b
+
+2. Start Ollama server:
+
+   ollama serve
+
+3. Start FastAPI wrapper (backend):
+
+   python -m uvicorn core.api:app --host 0.0.0.0 --port 8000
+
+4. Start Streamlit app (GUI):
+
+   streamlit run app.py
+

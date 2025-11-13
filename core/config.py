@@ -1,4 +1,9 @@
+from __future__ import annotations
 import os
+from pathlib import Path
+import json
+from urllib.parse import urlparse, urlunparse
+
 
 # Global Application Constants
 MAX_HISTORY_TURNS = (
@@ -56,7 +61,7 @@ Tags: In the case where there is a TBD or TBC in the description, add the tag 'T
    this column for a requirement.
 Requirement Type: Please classify the requirement as one of the following - 'Functional', 
    'Interface' or 'Constraint'
-Document Requirement ID: This should be the randomised alphanumerical requirement ID of each requirement.
+Document Requirement ID: This should be the unique randomised alphanumerical requirement ID of each requirement.
 
 When extracting the requirements, please ensure that the following are adhered to: 
 1. Requirements are verifiable.
@@ -163,22 +168,52 @@ Text Chunk:
 Classification:
 """
 
-# Model Names
-OLLAMA_EMBEDDING_MODEL_NAME = os.getenv(
-    "OLLAMA_EMBEDDING_MODEL_NAME", "mistral:7b"
-)
-OLLAMA_LLM_NAME = os.getenv("OLLAMA_LLM_NAME", "mistral:7b")
-RERANKER_MODEL_NAME = os.getenv(
-    "RERANKER_MODEL_NAME", "cross-encoder/ms-marco-MiniLM-L-6-v2"
-)
+# ========== Hard defaults (no env required) ==========
+# Models
+OLLAMA_EMBEDDING_MODEL_NAME = "mistral:7b"  
+OLLAMA_LLM_NAME             = "mistral:7b"
+RERANKER_MODEL_NAME         = "cross-encoder/ms-marco-MiniLM-L-6-v2"
 
-# Paths and URLs
-PDF_STORAGE_PATH = os.getenv("PDF_STORAGE_PATH", "document_store/pdfs/")
-CONTEXT_PDF_STORAGE_PATH = os.getenv(
-    "CONTEXT_PDF_STORAGE_PATH", "document_store/context_pdfs/"
-)
-MEMORY_FILE_PATH = os.getenv("MEMORY_FILE_PATH", "document_store/memory/context.json")
-# Fetch Ollama base URL from environment variable, with a default
-OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
+# Storage
+BASE_STORE               = Path("./document_store")
+PDF_STORAGE_PATH         = str(BASE_STORE / "pdfs")
+CONTEXT_PDF_STORAGE_PATH = str(BASE_STORE / "context_pdfs")
+MEMORY_FILE_PATH         = str(BASE_STORE / "memory" / "context.json")
 
+# Endpoints (local single-device defaults)
+# OLLAMA_BASE_URL is what the API wrapper uses to reach Ollama.
+# RAG_API_BASE is what the Streamlit app uses to reach your wrapper.
+OLLAMA_BASE_URL = "http://127.0.0.1:11434"
+RAG_API_BASE    = "http://127.0.0.1:8000"
 
+# Wrapper switch + (optional) auth
+USE_API_WRAPPER = True
+RAG_API_KEY     = ""  # set token here if you add auth to api.py
+
+_local_path = os.path.join(os.path.dirname(__file__), "config.local.json")
+if os.path.exists(_local_path):
+    try:
+        _ov = json.load(open(_local_path, "r"))
+        for k, v in _ov.items():
+            if k in globals():
+                globals()[k] = v
+    except Exception:
+        pass
+
+# ========== Utilities shared by API + App ==========
+def _normalize_url(url: str, default_port: int) -> str:
+    """Force IPv4 for 'localhost' and ensure a port is present."""
+    u = urlparse(url)
+    host = u.hostname or "127.0.0.1"
+    port = u.port or default_port
+    if host == "localhost":
+        host = "127.0.0.1"
+    return urlunparse((u.scheme or "http", f"{host}:{port}", "", "", "", ""))
+
+# Canonical, normalized URLs to use everywhere else
+OLLAMA_URL = _normalize_url(OLLAMA_BASE_URL, 11434)  # your “ollama_url”
+API_URL    = _normalize_url(RAG_API_BASE,    8000)
+
+# Ensure directories exist
+for p in (PDF_STORAGE_PATH, CONTEXT_PDF_STORAGE_PATH, Path(MEMORY_FILE_PATH).parent):
+    Path(p).mkdir(parents=True, exist_ok=True)
