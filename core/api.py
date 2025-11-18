@@ -1,16 +1,16 @@
-from typing import Optional
+# api.py
+from typing import Optional, Any, Dict, Union, List
 import time
-import logging
 
 from fastapi import FastAPI, HTTPException, Request, Query
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
+from starlette.responses import Response
 import httpx
 
-from typing import Optional, Any, Dict, Union
-from pydantic import BaseModel, Field
-
-from core.config import OLLAMA_URL
+from core.config import OLLAMA_URL, POSTMAN_PROXY
 from core.logger_config import setup_logging, get_logger  # your existing logger config
+
+from httpx import ConnectError, HTTPError
 
 
 # 🔧 initialize logging for this process
@@ -28,7 +28,7 @@ class GenerateReq(BaseModel):
     prompt: str
     model: str = "mistral:7b"
     temperature: float = 0.2
-    max_tokens: int | None = None
+    max_tokens: Optional[int] = None
 
 
 class GenerateResp(BaseModel):
@@ -37,17 +37,37 @@ class GenerateResp(BaseModel):
 
 
 class EmbedReq(BaseModel):
-    texts: list[str]
+    texts: List[str]
     model: str = "mistral:7b"
 
 
 class EmbedResp(BaseModel):
     model: str
-    embeddings: list[list[float]]
+    embeddings: List[List[float]]
+
+
+class UIEvent(BaseModel):
+    event: str
+    user_id: Optional[Union[int, str]] = None
+    metadata: Dict[str, Any] = Field(default_factory=dict)
 
 
 # =========================
-# 🌐 Middleware: log ALL HTTP requests
+# 🌐 httpx helper (timeout + optional Postman proxy)
+# =========================
+
+def _httpx_kwargs(timeout: float) -> Dict[str, Any]:
+    """
+    Common kwargs for httpx.AsyncClient.
+
+    NOTE: We no longer pass `proxies` here because this httpx version
+    doesn't support it in __init__. Instead, we use environment variables
+    (HTTP_PROXY / HTTPS_PROXY) to control proxying.
+    """
+    return {"timeout": timeout}
+
+# =========================
+# 🌐 Middleware: log ALL HTTP requests + responses
 # =========================
 
 @app.middleware("http")
@@ -63,8 +83,13 @@ async def log_requests(request: Request, call_next):
     body_bytes = b""
     if method in ("POST", "PUT", "PATCH"):
         body_bytes = await request.body()
-        preview = body_bytes.decode("utf-8", errors="ignore")[:500]
-        logger.info(f"   Request body preview: {preview!r}")
+        body_str = body_bytes.decode("utf-8", errors="ignore")
+
+        # Full body for /ui-event, preview elsewhere
+        if path == "/ui-event":
+            logger.info(f"   FULL request body: {body_str}")
+        else:
+            logger.info(f"   Request body preview: {body_str[:500]!r}")
 
         # Re-inject body so FastAPI can still read it
         async def receive():
@@ -72,7 +97,27 @@ async def log_requests(request: Request, call_next):
 
         request._receive = receive  # type: ignore[attr-defined]
 
+    # Call the actual endpoint
     response = await call_next(request)
+
+    # Capture response body
+    resp_body = b""
+    async for chunk in response.body_iterator:
+        resp_body += chunk
+
+    # Rebuild the response so it can still be sent to the client
+    new_response = Response(
+        content=resp_body,
+        status_code=response.status_code,
+        headers=dict(response.headers),
+        media_type=response.media_type,
+    )
+
+    resp_str = resp_body.decode("utf-8", errors="ignore")
+    if path == "/ui-event":
+        logger.info(f"   FULL response body: {resp_str}")
+    else:
+        logger.info(f"   Response body preview: {resp_str[:500]!r}")
 
     process_time = (time.time() - start_time) * 1000
     logger.info(
@@ -80,7 +125,7 @@ async def log_requests(request: Request, call_next):
         f"with status {response.status_code}"
     )
 
-    return response
+    return new_response
 
 
 # =========================
@@ -90,7 +135,6 @@ async def log_requests(request: Request, call_next):
 @app.on_event("startup")
 async def on_startup():
     logger.info(f"🚀 LLM Wrapper starting. Using Ollama at {OLLAMA_URL}")
-
 
 # =========================
 # 🔎 Basic endpoints
@@ -102,7 +146,7 @@ async def root():
     return {
         "ok": True,
         "service": "LLM Wrapper",
-        "endpoints": ["/health", "/generate", "/embed"],
+        "endpoints": ["/health", "/generate", "/embed", "/ui-event"],
     }
 
 
@@ -110,7 +154,7 @@ async def root():
 async def health():
     logger.info("Health check requested")
     try:
-        async with httpx.AsyncClient(timeout=10.0) as c:
+        async with httpx.AsyncClient(**_httpx_kwargs(10.0)) as c:
             r = await c.get(f"{OLLAMA_URL}/api/tags")
         ok = r.status_code == 200
         logger.info(f"Health -> {ok}")
@@ -142,8 +186,21 @@ async def generate(body: GenerateReq):
         "options": options,
     }
 
-    async with httpx.AsyncClient(timeout=120.0) as c:
-        r = await c.post(f"{OLLAMA_URL}/api/generate", json=payload)
+    try:
+        async with httpx.AsyncClient(**_httpx_kwargs(120.0)) as c:
+            r = await c.post(f"{OLLAMA_URL}/api/generate", json=payload)
+    except ConnectError as e:
+        logger.exception("Failed to connect to Ollama (likely proxy/port issue)")
+        raise HTTPException(
+            status_code=502,
+            detail={"error": "connect_error", "message": str(e)},
+        )
+    except HTTPError as e:
+        logger.exception("HTTP error talking to Ollama")
+        raise HTTPException(
+            status_code=502,
+            detail={"error": "http_error", "message": str(e)},
+        )
 
     if r.status_code != 200:
         # surface Ollama’s message so you can see "context length exceeded" etc.
@@ -200,9 +257,9 @@ async def generate_get(
 @app.post("/embed", response_model=EmbedResp)
 async def embed(body: EmbedReq):
     logger.info(f"/embed called | model={body.model} | n_texts={len(body.texts)}")
-    out: list[list[float]] = []
+    out: List[List[float]] = []
 
-    async with httpx.AsyncClient(timeout=60.0) as c:
+    async with httpx.AsyncClient(**_httpx_kwargs(60.0)) as c:
         for t in body.texts:
             r = await c.post(
                 f"{OLLAMA_URL}/api/embeddings",
@@ -219,7 +276,7 @@ async def embed(body: EmbedReq):
 
 @app.get("/embed")
 async def embed_get(
-    texts: Optional[list[str]] = Query(default=None),
+    texts: Optional[List[str]] = Query(default=None),
     model: str = "mistral:7b",
 ):
     """
@@ -240,11 +297,10 @@ async def embed_get(
     body = EmbedReq(texts=texts, model=model)
     return await embed(body)
 
-class UIEvent(BaseModel):
-    event: str
-    user_id: Optional[Union[int, str]] = None
-    metadata: Dict[str, Any] = Field(default_factory=dict)
 
+# =========================
+# 📱 /ui-event (from Streamlit)
+# =========================
 
 @app.post("/ui-event")
 async def ui_event(ev: UIEvent):
@@ -254,4 +310,5 @@ async def ui_event(ev: UIEvent):
     logger.info(
         f"📲 UI_EVENT | event={ev.event} | user={ev.user_id} | metadata={ev.metadata}"
     )
-    return {"ok": True}
+    resp = {"ok": True}
+    return resp

@@ -214,6 +214,10 @@ def _normalize_url(url: str, default_port: int) -> str:
 OLLAMA_URL = _normalize_url(OLLAMA_BASE_URL, 11434)  # your “ollama_url”
 API_URL    = _normalize_url(RAG_API_BASE,    8000)
 
+# Postman / debug proxy (set only when you want to capture traffic)
+# export POSTMAN_PROXY=http://127.0.0.1:5559
+POSTMAN_PROXY = os.getenv("POSTMAN_PROXY") 
+
 # Ensure directories exist
 for p in (PDF_STORAGE_PATH, CONTEXT_PDF_STORAGE_PATH, Path(MEMORY_FILE_PATH).parent):
     Path(p).mkdir(parents=True, exist_ok=True)
