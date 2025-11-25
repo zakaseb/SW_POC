@@ -193,10 +193,14 @@ def _split_text(text: str, max_chars: int = 900, overlap: int = 120) -> List[str
             result.append(block)
         else:
             start = 0
+            safe_overlap = max(0, overlap)
+            step = max(1, max_chars - safe_overlap)  # always progress, even if overlap >= max_chars
             while start < len(block):
                 end = min(start + max_chars, len(block))
                 result.append(block[start:end].strip())
-                start = max(end - overlap, end)
+                if end == len(block):
+                    break
+                start += step
     return result
 
 
