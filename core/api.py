@@ -259,16 +259,29 @@ async def embed(body: EmbedReq):
     logger.info(f"/embed called | model={body.model} | n_texts={len(body.texts)}")
     out: List[List[float]] = []
 
-    async with httpx.AsyncClient(**_httpx_kwargs(60.0)) as c:
-        for t in body.texts:
-            r = await c.post(
-                f"{OLLAMA_URL}/api/embeddings",
-                json={"model": body.model, "prompt": t},
-            )
-            if r.status_code != 200:
-                logger.error(f"/embed upstream error: {r.text}")
-                raise HTTPException(r.status_code, r.text)
-            out.append(r.json()["embedding"])
+    try:
+        async with httpx.AsyncClient(**_httpx_kwargs(60.0)) as c:
+            for t in body.texts:
+                r = await c.post(
+                    f"{OLLAMA_URL}/api/embeddings",
+                    json={"model": body.model, "prompt": t},
+                )
+                if r.status_code != 200:
+                    logger.error(f"/embed upstream error: {r.text}")
+                    raise HTTPException(r.status_code, r.text)
+                out.append(r.json()["embedding"])
+    except ConnectError as e:
+        logger.exception("Failed to connect to Ollama for embeddings")
+        raise HTTPException(
+            status_code=502,
+            detail={"error": "connect_error", "message": str(e)},
+        )
+    except HTTPError as e:
+        logger.exception("HTTP error while fetching embeddings from Ollama")
+        raise HTTPException(
+            status_code=502,
+            detail={"error": "http_error", "message": str(e)},
+        )
 
     logger.info("/embed succeeded")
     return EmbedResp(model=body.model, embeddings=out)
