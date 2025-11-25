@@ -169,12 +169,12 @@ def classify_chunk(language_model, chunk_text):
         return "Requirements"
 
 
-def generate_excel_file(requirements_json_list):
+def parse_requirements_payload(requirements_json_list):
     """
-    Parses a list of JSON strings, cleans them, and generates an Excel file in memory.
+    Parses and cleans a list of JSON strings representing requirements.
+    Returns a list of requirement dictionaries.
     """
     all_requirements = []
-
     for json_str in requirements_json_list:
         # Clean the string: remove markdown and other non-JSON artifacts
         # This regex looks for content between ```json and ``` or just `{` and `}` or `[` and `]`
@@ -193,6 +193,15 @@ def generate_excel_file(requirements_json_list):
             except json.JSONDecodeError:
                 logger.warning(f"Could not decode JSON from string: {cleaned_str}")
                 continue # Skip this string if it's not valid JSON
+
+    return all_requirements
+
+
+def generate_excel_file(requirements_json_list):
+    """
+    Parses a list of JSON strings, cleans them, and generates an Excel file in memory.
+    """
+    all_requirements = parse_requirements_payload(requirements_json_list)
 
     if not all_requirements:
         return None

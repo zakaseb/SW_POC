@@ -1,78 +1,121 @@
+import requests
 import streamlit as st
 from langchain_ollama import OllamaEmbeddings
 from langchain_ollama.llms import OllamaLLM
 from sentence_transformers import CrossEncoder
+
 from .config import (
     OLLAMA_BASE_URL,
     OLLAMA_EMBEDDING_MODEL_NAME,
     OLLAMA_LLM_NAME,
     RERANKER_MODEL_NAME,
 )
-from .logger_config import get_logger  # Import the logger
-import requests
+from .logger_config import get_logger
 
-logger = get_logger(__name__)  # Initialize logger for this module
+logger = get_logger(__name__)
 
 
-# Cached functions to load models
+def _ollama_up(base_url: str) -> bool:
+    try:
+        r = requests.get(f"{base_url}/api/tags", timeout=3)
+        return r.ok
+    except Exception as e:
+        logger.error(f"Ollama health check failed at {base_url}: {e}")
+        return False
+
+
 @st.cache_resource
 def get_embedding_model():
-    """Loads and caches the Ollama embedding model."""
+    """Loads and caches the Ollama embedding model (same API/shape as before)."""
     logger.info(
         f"Attempting to load Embedding Model: {OLLAMA_EMBEDDING_MODEL_NAME} from: {OLLAMA_BASE_URL}"
     )
     try:
+        if not _ollama_up(OLLAMA_BASE_URL):
+            msg = f"Ollama not reachable at {OLLAMA_BASE_URL} for embeddings."
+            logger.error(msg)
+            st.error(msg)
+            return None
+
+        # ---- probe: does this model actually support embeddings?
+        probe = requests.post(
+            f"{OLLAMA_BASE_URL}/api/embeddings",
+            json={"model": OLLAMA_EMBEDDING_MODEL_NAME, "prompt": "probe"},
+            timeout=10,
+        )
+        if not probe.ok:
+            warn = (
+                f"Embedding endpoint not supported by model '{OLLAMA_EMBEDDING_MODEL_NAME}'. "
+                f"Falling back to no-embeddings (BM25 + optional reranker)."
+            )
+            logger.warning(warn)
+            st.warning(warn)
+            return None
+
         model = OllamaEmbeddings(
             model=OLLAMA_EMBEDDING_MODEL_NAME, base_url=OLLAMA_BASE_URL
         )
-        logger.info(
-            f"Embedding Model {OLLAMA_EMBEDDING_MODEL_NAME} loaded successfully."
-        )
-        # Attempt a simple operation to check connectivity, if available and cheap.
-        # For OllamaEmbeddings, actual connection might be deferred.
-        # If not, error will be caught on first use in the main script.
+        logger.info(f"Embedding Model {OLLAMA_EMBEDDING_MODEL_NAME} loaded successfully.")
         return model
+
     except requests.exceptions.ConnectionError as conn_err:
-        user_message = f"Failed to connect to Ollama at {OLLAMA_BASE_URL} for Embedding Model. Please ensure Ollama is running and accessible."
+        user_message = f"Failed to connect to Ollama at {OLLAMA_BASE_URL} for Embedding Model."
         logger.error(f"{user_message} Details: {conn_err}")
         st.error(user_message)
         return None
     except Exception as e:
-        user_message = f"An unexpected error occurred while loading the Embedding Model ({OLLAMA_EMBEDDING_MODEL_NAME})."
-        logger.exception(
-            f"{user_message} Details: {e}"
-        )  # Use logger.exception to include stack trace
+        user_message = (
+            f"An unexpected error occurred while loading the Embedding Model "
+            f"({OLLAMA_EMBEDDING_MODEL_NAME})."
+        )
+        logger.exception(f"{user_message} Details: {e}")
         st.error(f"{user_message} Check logs for details.")
         return None
 
 
 @st.cache_resource
 def get_language_model():
-    """Loads and caches the Ollama language model."""
+    """Loads and caches the Ollama language model (same API/shape as before)."""
     logger.info(
         f"Attempting to load Language Model: {OLLAMA_LLM_NAME} from: {OLLAMA_BASE_URL}"
     )
     try:
+        if not _ollama_up(OLLAMA_BASE_URL):
+            msg = f"Failed to reach Ollama at {OLLAMA_BASE_URL} for Language Model."
+            logger.error(msg)
+            st.error(msg)
+            return None
+
+        # ---- Option B: allow same model name for LLM and embeddings, just warn
+        if OLLAMA_LLM_NAME == OLLAMA_EMBEDDING_MODEL_NAME:
+            msg = (
+                f"Warning: LLM and Embedding model both set to '{OLLAMA_LLM_NAME}'. "
+                f"Make sure this model supports BOTH /api/generate and /api/embeddings."
+            )
+            logger.warning(msg)
+            # no st.error, no return — we proceed like old days
+
         model = OllamaLLM(model=OLLAMA_LLM_NAME, base_url=OLLAMA_BASE_URL)
         logger.info(f"Language Model {OLLAMA_LLM_NAME} loaded successfully.")
-        # Similar to embedding model, actual connection test might be deferred.
         return model
+
     except requests.exceptions.ConnectionError as conn_err:
-        user_message = f"Failed to connect to Ollama at {OLLAMA_BASE_URL} for Language Model. Please ensure Ollama is running and accessible."
+        user_message = f"Failed to connect to Ollama at {OLLAMA_BASE_URL} for Language Model."
         logger.error(f"{user_message} Details: {conn_err}")
         st.error(user_message)
         return None
     except Exception as e:
-        user_message = f"An unexpected error occurred while loading the Language Model ({OLLAMA_LLM_NAME})."
-        logger.exception(
-            f"{user_message} Details: {e}"
-        )  # Use logger.exception to include stack trace
+        user_message = (
+            f"An unexpected error occurred while loading the Language Model "
+            f"({OLLAMA_LLM_NAME})."
+        )
+        logger.exception(f"{user_message} Details: {e}")
         st.error(f"{user_message} Check logs for details.")
         return None
 
 
 @st.cache_resource
-def get_reranker_model():  # model_name parameter removed, uses RERANKER_MODEL_NAME from config
+def get_reranker_model():
     """
     Loads and caches the CrossEncoder model for re-ranking.
     Uses RERANKER_MODEL_NAME from config.
@@ -83,9 +126,9 @@ def get_reranker_model():  # model_name parameter removed, uses RERANKER_MODEL_N
         logger.info(f"CrossEncoder model {RERANKER_MODEL_NAME} loaded successfully.")
         return model
     except Exception as e:
-        user_message = f"Error loading CrossEncoder model '{RERANKER_MODEL_NAME}'. Re-ranking will be disabled."
-        logger.exception(
-            f"{user_message} Details: {e}"
-        )  # Use logger.exception to include stack trace
+        user_message = (
+            f"Error loading CrossEncoder model '{RERANKER_MODEL_NAME}'. Re-ranking will be disabled."
+        )
+        logger.exception(f"{user_message} Details: {e}")
         st.error(f"{user_message} Check logs for details.")
         return None

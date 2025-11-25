@@ -1,0 +1,119 @@
+ “How to Run” 
+---
+
+## 1. Install and Run Postman (Manually)
+
+1. Download Postman for Linux from:
+   [https://www.postman.com/downloads/]
+
+2. Save the `.tar.gz` file (for example, `Postman-linux-x64-<version>.tar.gz`) into your `~/Downloads` directory.
+
+3. Extract it manually
+
+4. Open a terminal & Change into the Postman directory:
+
+   cd ~/Downloads/<extracted_folder>/Postman
+
+4. Run Postman:
+
+   ./Postman
+
+5. In Postman, enable the proxy capture:
+
+   * Click “Capture requests” (bottom-right).
+   * Select the “Proxy” tab.
+   * Set the proxy port to `5560`.
+   * Click “Start capture”.
+
+Postman will now listen on `http://127.0.0.1:5560` for HTTP(S) traffic.
+
+---
+
+## 2. Start Ollama (LLM Server)
+
+Open **Terminal 1**.
+
+1. Pull the model (only required once):
+
+   ollama pull mistral:7b
+
+2. Start the Ollama server:
+
+   ollama serve
+
+Ollama will listen on `http://127.0.0.1:11434`.
+
+Keep this terminal running.
+
+---
+
+## 3. Start the FastAPI Wrapper (Backend)
+
+Open **Terminal 2**.
+
+1. Go to your project and activate the virtual environment:
+
+   cd ~/wrapper/SW_POC
+   source venv/bin/activate
+
+2. Configure this process to send outbound HTTP traffic (API → Ollama) through the Postman proxy:
+
+   export HTTP_PROXY=http://127.0.0.1:5560
+   export HTTPS_PROXY=http://127.0.0.1:5560
+
+3. Start the FastAPI application:
+
+   python -m uvicorn core.api:app --host 0.0.0.0 --port 8000
+
+The API will be available at `http://127.0.0.1:8000`.
+
+4. (Optional) In a separate terminal, you can test it with:
+
+   curl http://127.0.0.1:8000/health
+
+   A healthy response should return `{"ok": true}`.
+
+Postman should now capture requests from the API to Ollama, such as:
+
+* `GET http://127.0.0.1:11434/api/tags`
+* `POST http://127.0.0.1:11434/api/generate`
+* `POST http://127.0.0.1:11434/api/embeddings`
+
+---
+
+## 4. Start the Streamlit RAG GUI 
+
+Open **Terminal 3**.
+
+1. Go to your project and activate the virtual environment:
+
+   cd ~/wrapper/SW_POC
+   source venv/bin/activate
+
+2. Configure this process so that:
+
+   * Calls to the API at `http://127.0.0.1:8000` go through Postman (so the GUI → API traffic is captured).
+   * Calls to `https://huggingface.co` bypass the proxy (to avoid SSL certificate errors).
+
+   Set the following:
+
+   export HTTP_PROXY=http://127.0.0.1:5560
+   export HTTPS_PROXY=http://127.0.0.1:5560
+   export NO_PROXY=huggingface.co
+
+   Explanation:
+
+   * `HTTP_PROXY` / `HTTPS_PROXY` route most HTTP(S) traffic through Postman.
+   * `NO_PROXY=huggingface.co` tells the system not to use the proxy for Hugging Face downloads, which prevents the `SSL: CERTIFICATE_VERIFY_FAILED` error when loading models such as `cross-encoder/ms-marco-MiniLM-L-6-v2` and `sentence-transformers/all-MiniLM-L6-v2`.
+
+3. Start the Streamlit application:
+
+   streamlit run rag_deep.py
+
+Streamlit will print the local URL, for example:
+
+* `http://localhost:8503`
+
+Open that URL in your browser to use the GUI.
+
+---

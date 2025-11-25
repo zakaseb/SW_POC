@@ -3,9 +3,7 @@ import streamlit as st
 from rank_bm25 import BM25Okapi
 import pandas as pd
 import json
-import io
 import re
-import base64
 
 # Configure logging first
 from core.logger_config import setup_logging, get_logger
@@ -16,7 +14,6 @@ logger = get_logger(__name__)
 from pathlib import Path
 import shutil
 
-# Import from new core modules
 from core.auth import show_login_form
 from core.config import (
     MAX_HISTORY_TURNS,
@@ -40,7 +37,7 @@ from core.document_processing import (
     index_documents,
 )
 from core.search_pipeline import get_persistent_context, get_general_context, get_requirements_chunks
-from core.generation import generate_answer, generate_requirements_json, generate_excel_file
+from core.generation import generate_answer
 from core.session_manager import (
     initialize_session_state,
     reset_document_states,
@@ -49,6 +46,43 @@ from core.session_manager import (
 )
 from core.database import save_session
 from core.session_utils import package_session_for_storage
+from core.requirement_jobs import (
+    submit_requirement_generation_job,
+    get_latest_requirement_job,
+    get_requirement_job,
+    list_requirement_jobs,
+    load_job_excel_bytes,
+    load_job_requirements,
+)
+
+from core.config import USE_API_WRAPPER, API_URL, OLLAMA_URL
+st.caption(f"Mode: {'WRAPPED' if USE_API_WRAPPER else 'DIRECT'} · API={API_URL} · OLLAMA={OLLAMA_URL}")
+
+import requests  
+
+def log_ui_event_to_api(event: str, metadata: dict | None = None):
+    """
+    Send a UI event to the FastAPI wrapper so it shows up in API logs.
+    """
+    if not USE_API_WRAPPER:
+        # In DIRECT mode you might skip this, or still send if you like
+        return
+
+    payload = {
+        "event": event,
+        "user_id": st.session_state.get("user_id"),
+        "metadata": metadata or {},
+    }
+
+    try:
+        requests.post(
+            f"{API_URL}/ui-event",
+            json=payload,
+            timeout=2,
+        )
+    except Exception as e:
+        # Don't break the UI if logging fails, just warn
+        logger.warning(f"Failed to send UI event to API: {e}")
 
 # Use your existing config var
 CONTEXT_DIR = Path(CONTEXT_PDF_STORAGE_PATH).resolve()
@@ -104,11 +138,6 @@ def index_global_context_once(ctx_file: Path):
         st.session_state.context_document_loaded = True
 
 
-_WORD_RE = re.compile(r"[A-Za-z0-9_']+")
-
-def _tok(s: str):
-    return [w.lower() for w in _WORD_RE.findall(s or "")]
-
 def _split_paras(text: str, max_chars: int = 900, overlap: int = 120):
     if not text:
         return []
@@ -124,6 +153,33 @@ def _split_paras(text: str, max_chars: int = 900, overlap: int = 120):
                 out.append(p[i:j].strip())
                 i = max(j - overlap, j)
     return out
+
+
+def refresh_requirement_job_state():
+    """Load the latest requirement job status and artifacts for the logged-in user."""
+    user_id = st.session_state.get("user_id")
+    if not user_id:
+        return
+
+    latest_job = get_latest_requirement_job(user_id)
+    st.session_state.latest_requirement_job = latest_job
+
+    if not latest_job:
+        st.session_state.pop("latest_requirement_job_error", None)
+        return
+
+    status = latest_job.get("status")
+    if status == "completed":
+        excel_bytes = load_job_excel_bytes(latest_job)
+        if excel_bytes:
+            st.session_state.excel_file_data = excel_bytes
+        requirements_payload = load_job_requirements(latest_job)
+        if requirements_payload:
+            st.session_state.generated_requirements = requirements_payload
+    if status == "failed":
+        st.session_state.latest_requirement_job_error = latest_job.get("error_message")
+    else:
+        st.session_state.pop("latest_requirement_job_error", None)
 
 # ---------------------------------
 # App Styling with CSS
@@ -206,6 +262,10 @@ logger.info(f"Ensured PDF storage directory exists: {PDF_STORAGE_PATH}")
 if not show_login_form():
     st.stop()
 
+if st.session_state.get("authenticated") and not st.session_state.get("login_logged"):
+    log_ui_event_to_api("login_success")
+    st.session_state["login_logged"] = True
+
 # Auto-enable global context once per session after successful login
 if (st.session_state.get("authenticated")
     and st.session_state.get("user_id")
@@ -223,6 +283,10 @@ if (st.session_state.get("authenticated")
     index_global_context_once(ctx_path)
     st.session_state["did_context_bootstrap"] = True
     st.session_state["context_document_loaded"] = True
+
+# Keep requirement job state in sync for authenticated users
+if st.session_state.get("authenticated") and st.session_state.get("user_id"):
+    refresh_requirement_job_state()
    
 # ---------------------------------
 # User Interface
@@ -233,6 +297,7 @@ with st.sidebar:
     st.header("Controls")
 
     if st.button("Logout", key="logout_button"):
+        log_ui_event_to_api("logout_clicked")
         session_to_save = package_session_for_storage()
         save_session(st.session_state.user_id, session_to_save)
 
@@ -268,6 +333,7 @@ with st.sidebar:
                         st.session_state.context_chunks = all_chunks
                         st.session_state.context_document_loaded = True
                         st.success("Context document successfully uploaded!")
+                        log_ui_event_to_api("context_upload",{"name": context_uploaded_file.name, "size": context_uploaded_file.size},)
                     else:
                         st.error("Failed to generate chunks from the context document.")
                 else:
@@ -278,11 +344,13 @@ with st.sidebar:
     if st.button("Clear Chat History", key="clear_chat"):
         st.session_state.messages = []
         logger.info("Chat history cleared by user.")
+        log_ui_event_to_api("chat_cleared")
 
     if st.button("Delete Context Document", key="purge_memory"):
         purge_persistent_memory()
         logger.info("Context document deleted by user.")
         st.success("Context document has been deleted.")
+        log_ui_event_to_api("context_deleted")
 
     if st.button("Reset All Documents & Chat", key="reset_doc_chat_button"):
         logger.info("Resetting all documents and chat.")
@@ -290,13 +358,20 @@ with st.sidebar:
         reset_file_uploader()
         st.success("All documents and chat reset. You can now upload new documents.")
         logger.info("All documents and chat successfully reset.")
+        log_ui_event_to_api("reset_all_done")
         st.rerun()
 
-    if st.session_state.document_processed:
-        if st.button("Generate Requirements", key="generate_requirements_button"):
-            with st.spinner("Generating requirements... This might take a moment."):
+    job_info = st.session_state.get("latest_requirement_job")
+    job_status = job_info.get("status") if job_info else None
 
-                # 1) Get requirement chunks
+    if st.session_state.document_processed:
+        generate_disabled = job_status in {"queued", "running"}
+        if st.button(
+            "Generate Requirements",
+            key="generate_requirements_button",
+            disabled=generate_disabled,
+        ):
+            with st.spinner("Submitting requirement generation job..."):
                 requirements_chunks = get_requirements_chunks(
                     document_vector_db=st.session_state.DOCUMENT_VECTOR_DB,
                 )
@@ -304,128 +379,80 @@ with st.sidebar:
                     st.sidebar.warning("No requirements chunks found to process.")
                 else:
 
-                    # 2) Get verification & general docs using YOUR functions
                     verif_docs = get_persistent_context(
-                        context_vector_db=st.session_state.PERSISTENT_VECTOR_DB   # <- your persistent VB
+                        context_vector_db=st.session_state.PERSISTENT_VECTOR_DB
                     )
                     general_docs = get_general_context(
                         general_vector_db=st.session_state.GENERAL_VECTOR_DB
                     )
 
-                    # --- NEW: Build/cache BM25 over GENERAL context paragraphs
-                    if ("GENERAL_BM25" not in st.session_state or
-                        st.session_state.get("GENERAL_BM25_count", -1) != len(general_docs)):
-                        raw_general_chunks = []
-                        for d in general_docs:
-                            if getattr(d, "page_content", None):
-                                raw_general_chunks.extend(_split_paras(d.page_content, max_chars=900, overlap=120))
-                        tokenized = [_tok(c) for c in raw_general_chunks] or [[""]]
-                        st.session_state.GENERAL_BM25 = BM25Okapi(tokenized)
-                        st.session_state.GENERAL_BM25_RAW = raw_general_chunks or [""]
-                        st.session_state.GENERAL_BM25_count = len(general_docs)
-
-                    # 3) Print/log counts 
-                    verif_count = len(verif_docs)
-                    general_count = len(general_docs)
-                    req_count = len(requirements_chunks)
-                    print(f"📄 Verification context chunks: {verif_count}")
-                    print(f"📘 General context chunks: {general_count}")
-                    print(f"🧩 Requirement chunks to process: {req_count}")
-                    st.info(f"Verification: {verif_count} | General: {general_count} | Requirements: {req_count}")
-
-                    # 4) Turn docs -> text (page_content) ONCE and reuse
-                    joiner = "\n\n---\n\n"
-                    verification_context_all = joiner.join(
-                        d.page_content.strip() for d in verif_docs if getattr(d, "page_content", None)
-                    )
-
-                    # ✅ Print only character lengths
-                    verif_chars = len(verification_context_all)
-                    print(f"Verification context length: {verif_chars} characters")
-
-                    # Safe character limit for mistral:7b (≈8k tokens × 4 chars/token)
-                    SAFE_CHAR_CAP = 32000
-                    TOP_K_GENERAL = 8  # tune 6–10
-
-                    # 5) Generate per-chunk with both contexts
-                    all_requirements = []
-                    for req_chunk in requirements_chunks:
-                        req_text  = (req_chunk.page_content or "")
-                        req_chars = len(req_text)
-
-                        # --- NEW: BM25 select top-k general context per requirement
-                        bm25 = st.session_state.GENERAL_BM25
-                        raw_chunks = st.session_state.GENERAL_BM25_RAW
-                        q = _tok(req_text)
-                        if q:
-                            scores = bm25.get_scores(q)
-                            top_idx = sorted(range(len(scores)), key=lambda i: scores[i], reverse=True)[:TOP_K_GENERAL]
-                            top_general_chunks = [raw_chunks[i] for i in top_idx if raw_chunks[i].strip()]
-                        else:
-                            top_general_chunks = []
-
-                        general_context_selected = joiner.join(top_general_chunks)
-                        general_chars = len(general_context_selected)
-
-                        print(f"Current requirement chunk length: {req_chars} characters")
-                        print(f"Selected {len(top_general_chunks)} general chunks; chars={general_chars}")
-
-                        total_chars = verif_chars + general_chars + req_chars
-                        print(f"Total input characters passed: {total_chars}")
-
-                        # ⚠️ Warn if nearing or exceeding safe limit
-                        if total_chars > SAFE_CHAR_CAP:
-                            msg = (
-                                f"⚠️ Possible truncation risk: {total_chars} characters "
-                                f"exceeds safe cap of {SAFE_CHAR_CAP} for mistral:7b."
-                            )
-                            print(msg)
-                            st.warning(msg)
-
-                        json_response = generate_requirements_json(
-                            LANGUAGE_MODEL,
-                            req_chunk,
-                            verification_methods_context=verification_context_all,
-                            general_context=general_context_selected,  # <-- CHANGED (top-k only)
+                    try:
+                        job_id = submit_requirement_generation_job(
+                            user_id=st.session_state.user_id,
+                            language_model=LANGUAGE_MODEL,
+                            requirements_chunks=requirements_chunks,
+                            verification_docs=verif_docs,
+                            general_docs=general_docs,
                         )
-                        all_requirements.append(json_response)
+                        st.session_state.latest_requirement_job = get_requirement_job(job_id)
+                        log_ui_event_to_api(
+                            "requirements_job_submitted",
+                            {"job_id": job_id, "chunk_count": len(requirements_chunks)},
+                        )
+                        st.sidebar.success("Requirement generation started in the background.")
+                    except Exception as exc:
+                        st.sidebar.error(f"Failed to queue requirement job: {exc}")
 
-                    st.session_state.generated_requirements = all_requirements
+    if job_info:
+        status_label = (job_status or "unknown").capitalize()
+        st.sidebar.markdown("---")
+        st.sidebar.subheader("Requirement Job Status")
+        st.sidebar.write(f"Latest job: **{status_label}**")
+        if job_status == "failed":
+            error_msg = st.session_state.get("latest_requirement_job_error") or job_info.get("error_message")
+            if error_msg:
+                st.sidebar.error(f"Job failed: {error_msg}")
+        elif job_status in {"queued", "running"}:
+            st.sidebar.info("A background job is running. You may continue working or log out safely.")
+        elif job_status == "completed":
+            st.sidebar.success("Latest requirements are ready to download.")
+    else:
+        st.sidebar.markdown("---")
+        st.sidebar.caption("No requirement generation jobs yet.")
 
-                    excel_data = generate_excel_file(all_requirements)
-                    if excel_data:
-                        st.session_state.excel_file_data = excel_data
-                        st.sidebar.success("Requirements generated successfully!")
-                        # Trigger auto-download
-                        b64 = base64.b64encode(excel_data).decode()
-                        href = f'<a href="data:application/octet-stream;base64,{b64}" download="generated_requirements.xlsx" id="download-link" style="display:none">Download</a>'
-                        js = '<script>document.getElementById("download-link").click()</script>'
-                        st.session_state.download_trigger = href + js
-                        st.rerun()
-                    else:
-                        st.sidebar.warning("Requirements generated, but no valid data was found to create an Excel file.")
+    if st.session_state.get("user_id"):
+        recent_jobs = list_requirement_jobs(st.session_state.user_id, limit=3)
+        if recent_jobs:
+            st.sidebar.caption("Recent jobs:")
+            for job in recent_jobs:
+                st.sidebar.caption(
+                    f"{job['id'][:8]} · {job['status'].title()} · {job['updated_at']}"
+                )
 
-        if "excel_file_data" in st.session_state and st.session_state.excel_file_data:
-            st.download_button(
-                label="Download Requirements",
-                data=st.session_state.excel_file_data,
-                file_name="generated_requirements.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                key="download_requirements"
-            )
+    if st.session_state.get("excel_file_data"):
+        download_clicked = st.download_button(
+            label="Download Requirements",
+            data=st.session_state.excel_file_data,
+            file_name="generated_requirements.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            key="download_requirements"
+        )
 
-    if st.session_state.get("generated_requirements"):
+        if download_clicked:
+            log_ui_event_to_api("download_requirements_clicked")
+
+    generated_requirements = st.session_state.get("generated_requirements")
+    if generated_requirements:
         st.sidebar.markdown("---")
         st.sidebar.subheader("Generated Requirements")
-        # Display each requirement in a separate text area
-        for i, req in enumerate(st.session_state.generated_requirements):
+        for i, req in enumerate(generated_requirements):
+            if isinstance(req, dict):
+                display_value = json.dumps(req, indent=2)
+            else:
+                display_value = str(req)
             st.sidebar.text_area(
-                f"Requirement {i+1}", value=req, height=200, disabled=True
+                f"Requirement {i+1}", value=display_value, height=200, disabled=True
             )
-
-        if st.session_state.get("excel_file"):
-            # The download will now be triggered automatically.
-            pass
 
 
 st.title("📘 MBSE: JAMA Requirement Generator")
@@ -446,6 +473,11 @@ uploaded_files = st.file_uploader(
 if uploaded_files:
     current_uploaded_files_info = {f.name: f.size for f in uploaded_files}
     logger.info(f"Files uploaded: {list(current_uploaded_files_info.keys())}")
+
+    log_ui_event_to_api(
+        "files_selected",
+        {"files": current_uploaded_files_info},
+    )
 
     # Check if the uploaded files are the same as the ones already processed
     if current_uploaded_files_info != st.session_state.get("processed_files_info", {}):
@@ -524,6 +556,13 @@ if uploaded_files:
                                 display_filenames = ", ".join(st.session_state.uploaded_filenames)
                                 logger.info(f"BM25 index created for documents: {display_filenames}")
                                 st.success(f"✅ Documents ({display_filenames}) processed and indexed successfully!")
+                                log_ui_event_to_api(
+                                "documents_processed",
+                                {
+                                    "filenames": st.session_state.uploaded_filenames,
+                                    "num_general_chunks": len(general_context_chunks),
+                                    "num_requirements_chunks": len(requirements_chunks),
+                                },)
                             else:
                                 logger.info("No requirements chunks to index for BM25.")
                                 st.success("✅ Documents processed. No specific requirements chunks found for keyword search indexing.")
@@ -555,11 +594,6 @@ if st.session_state.get("uploaded_filenames") and st.session_state.get(
         st.markdown(f"- _{name}_")
     st.markdown("---")
 
-# Check if a download should be triggered
-if "download_trigger" in st.session_state and st.session_state.download_trigger:
-    st.components.v1.html(st.session_state.download_trigger, height=0)
-    st.session_state.download_trigger = None # Clear the trigger
-
 for message in st.session_state.messages:
     with st.chat_message(message["role"], avatar=message.get("avatar")):
         st.write(message["content"])
@@ -577,6 +611,10 @@ if st.session_state.document_processed:
     user_input = st.chat_input(chat_placeholder)
     if user_input:
         logger.info(f"User query: {user_input}")
+        log_ui_event_to_api(
+        "chat_question",
+        {"query": user_input[:200]},  # truncate for safety
+        )
         if not user_input.strip():
             st.warning("Please enter a question.")
         else:
@@ -624,6 +662,10 @@ if st.session_state.document_processed:
                         context_documents=all_context_docs,
                         conversation_history=formatted_history,
                         persistent_memory=persistent_memory_str,
+                    )
+                    log_ui_event_to_api(
+                        "chat_answer",
+                        {"answer_preview": ai_response[:200]},
                     )
 
             logger.info(
