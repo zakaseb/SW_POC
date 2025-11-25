@@ -179,6 +179,7 @@ BASE_STORE               = Path("./document_store")
 PDF_STORAGE_PATH         = str(BASE_STORE / "pdfs")
 CONTEXT_PDF_STORAGE_PATH = str(BASE_STORE / "context_pdfs")
 MEMORY_FILE_PATH         = str(BASE_STORE / "memory" / "context.json")
+REQUIREMENTS_OUTPUT_PATH = str(BASE_STORE / "generated_requirements")
 
 # Endpoints (local single-device defaults)
 # OLLAMA_BASE_URL is what the API wrapper uses to reach Ollama.
@@ -219,5 +220,5 @@ API_URL    = _normalize_url(RAG_API_BASE,    8000)
 POSTMAN_PROXY = os.getenv("POSTMAN_PROXY") 
 
 # Ensure directories exist
-for p in (PDF_STORAGE_PATH, CONTEXT_PDF_STORAGE_PATH, Path(MEMORY_FILE_PATH).parent):
+for p in (PDF_STORAGE_PATH, CONTEXT_PDF_STORAGE_PATH, Path(MEMORY_FILE_PATH).parent, REQUIREMENTS_OUTPUT_PATH):
     Path(p).mkdir(parents=True, exist_ok=True)
