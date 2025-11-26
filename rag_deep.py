@@ -55,8 +55,7 @@ from core.requirement_jobs import (
     load_job_requirements,
 )
 
-from core.config import USE_API_WRAPPER, API_URL, OLLAMA_URL
-st.caption(f"Mode: {'WRAPPED' if USE_API_WRAPPER else 'DIRECT'} · API={API_URL} · OLLAMA={OLLAMA_URL}")
+from core.config import USE_API_WRAPPER, API_URL
 
 import requests  
 
@@ -363,45 +362,10 @@ with st.sidebar:
 
     job_info = st.session_state.get("latest_requirement_job")
     job_status = job_info.get("status") if job_info else None
+    generate_requirements_slot = st.empty()
 
-    if st.session_state.document_processed:
-        generate_disabled = job_status in {"queued", "running"}
-        if st.button(
-            "Generate Requirements",
-            key="generate_requirements_button",
-            disabled=generate_disabled,
-        ):
-            with st.spinner("Submitting requirement generation job..."):
-                requirements_chunks = get_requirements_chunks(
-                    document_vector_db=st.session_state.DOCUMENT_VECTOR_DB,
-                )
-                if not requirements_chunks:
-                    st.sidebar.warning("No requirements chunks found to process.")
-                else:
-
-                    verif_docs = get_persistent_context(
-                        context_vector_db=st.session_state.PERSISTENT_VECTOR_DB
-                    )
-                    general_docs = get_general_context(
-                        general_vector_db=st.session_state.GENERAL_VECTOR_DB
-                    )
-
-                    try:
-                        job_id = submit_requirement_generation_job(
-                            user_id=st.session_state.user_id,
-                            language_model=LANGUAGE_MODEL,
-                            requirements_chunks=requirements_chunks,
-                            verification_docs=verif_docs,
-                            general_docs=general_docs,
-                        )
-                        st.session_state.latest_requirement_job = get_requirement_job(job_id)
-                        log_ui_event_to_api(
-                            "requirements_job_submitted",
-                            {"job_id": job_id, "chunk_count": len(requirements_chunks)},
-                        )
-                        st.sidebar.success("Requirement generation started in the background.")
-                    except Exception as exc:
-                        st.sidebar.error(f"Failed to queue requirement job: {exc}")
+    if st.session_state.pop("requirement_job_submission_success", False):
+        st.sidebar.success("Requirement generation started in the background.")
 
     if job_info:
         status_label = (job_status or "unknown").capitalize()
@@ -593,6 +557,46 @@ if st.session_state.get("uploaded_filenames") and st.session_state.get(
     for name in st.session_state.uploaded_filenames:
         st.markdown(f"- _{name}_")
     st.markdown("---")
+
+if st.session_state.document_processed:
+    generate_disabled = job_status in {"queued", "running"}
+    if generate_requirements_slot.button(
+        "Generate Requirements",
+        key="generate_requirements_button",
+        disabled=generate_disabled,
+    ):
+        with st.spinner("Submitting requirement generation job..."):
+            requirements_chunks = get_requirements_chunks(
+                document_vector_db=st.session_state.DOCUMENT_VECTOR_DB,
+            )
+            if not requirements_chunks:
+                st.sidebar.warning("No requirements chunks found to process.")
+            else:
+                verif_docs = get_persistent_context(
+                    context_vector_db=st.session_state.PERSISTENT_VECTOR_DB
+                )
+                general_docs = get_general_context(
+                    general_vector_db=st.session_state.GENERAL_VECTOR_DB
+                )
+
+                try:
+                    job_id = submit_requirement_generation_job(
+                        user_id=st.session_state.user_id,
+                        language_model=LANGUAGE_MODEL,
+                        requirements_chunks=requirements_chunks,
+                        verification_docs=verif_docs,
+                        general_docs=general_docs,
+                    )
+                    st.session_state.latest_requirement_job = get_requirement_job(job_id)
+                    refresh_requirement_job_state()
+                    log_ui_event_to_api(
+                        "requirements_job_submitted",
+                        {"job_id": job_id, "chunk_count": len(requirements_chunks)},
+                    )
+                    st.session_state.requirement_job_submission_success = True
+                    st.rerun()
+                except Exception as exc:
+                    st.sidebar.error(f"Failed to queue requirement job: {exc}")
 
 for message in st.session_state.messages:
     with st.chat_message(message["role"], avatar=message.get("avatar")):

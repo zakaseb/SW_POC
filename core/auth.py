@@ -10,11 +10,13 @@ def show_login_form():
         st.session_state.authenticated = False
 
     if not st.session_state.authenticated:
-        st.title("Login")
-        username = st.text_input("Username", key="login_username")
-        password = st.text_input("Password", type="password", key="login_password")
+        st.title("Log in")
+        with st.form("login_form"):
+            username = st.text_input("Username", key="login_username")
+            password = st.text_input("Password", type="password", key="login_password")
+            submitted = st.form_submit_button("Log in", type="primary")
 
-        if st.button("Login"):
+        if submitted:
             if verify_user(username, password):
                 st.session_state.authenticated = True
                 user_id = get_user_id_by_username(username)
