@@ -134,10 +134,10 @@ The application ships with:
 
 ### 1. Prerequisites
 
-- **Python** 3.9–3.12 (the legagcy Dockerfile pins 3.9; local virtualenvs work with 3.12 as well).
+- **Python** 3.9–3.12 (the Dockerfile pins 3.9; local virtualenvs work with 3.12 as well).
 - **Ollama** running on the same machine or reachable over the network. Pull the models you plan to reference (defaults: `mistral:7b` for both embeddings and generation).
 - **Git**, **pip**, and build-essential libraries required by Docling (Poppler, libGL, etc., depending on your OS).
-- Optional: **Docker**/**Docker Compose** for container deployment (not created yet), **Postman** if you plan to capture API traffic per `Run_steps.txt`.
+- Optional: **Docker**/**Docker Compose** for container deployment, **Postman** if you plan to capture API traffic per `Run_steps.txt`.
 
 ### 2. Clone the repository
 
@@ -170,7 +170,7 @@ Choose the requirement file that fits your environment:
   ```
 - **Slim stack / legacy environments** (no Docling, fewer extras):
   ```bash
-  pip install -r requirements_sw_final.txt
+  pip install -r requirements.txt
   ```
 
 If you install the slim stack, add Docling manually:
@@ -231,7 +231,7 @@ All configuration values live in `core/config.py`. You can override them via:
    ```
 2. **Activate your virtualenv** (terminal #2) and export any overrides:
    ```bash
-   cd /home/precision7780/PycharmProjects/DocuMind-AI
+   cd /path/to/DocuMind-AI
    source venv/bin/activate
    export OLLAMA_BASE_URL=http://127.0.0.1:11434
    export LOG_LEVEL=INFO
@@ -256,7 +256,7 @@ All configuration values live in `core/config.py`. You can override them via:
 
 This workflow is useful when you need to audit every `/generate`/`/embed` call without instrumenting Ollama directly.
 
-### Docker Compose (not updated yet)
+### Docker Compose
 
 1. Ensure Ollama is running on the host (or amend `docker-compose.yml` to point to your Ollama container/network).
 2. From the repo root:
@@ -337,6 +337,6 @@ Additional sample documents live under `SW_PoC/` and `dummy20250710102410/` for 
 
 ---
 
-Halcon JAMA-compliant MBSE Requirement Intelligence Platform is designed to be extended—whether that means swapping in a different LLM via Ollama, connecting the FastAPI wrapper to additional observability tooling, or wiring the existing summarization/keyword utilities into the UI. Use this README as your checklist for understanding the moving parts before you customize them.
+DocuMind-AI is designed to be extended—whether that means swapping in a different LLM via Ollama, connecting the FastAPI wrapper to additional observability tooling, or wiring the existing summarization/keyword utilities into the UI. Use this README as your checklist for understanding the moving parts before you customize them.
 
 
