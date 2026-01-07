@@ -9,6 +9,12 @@ from .config import PDF_STORAGE_PATH, CONTEXT_PDF_STORAGE_PATH
 from .logger_config import get_logger
 from .model_loader import get_language_model
 from .generation import classify_chunk
+from .config import (
+    MODEL_CACHE_DIR,
+    HF_LOCAL_FILES_ONLY,
+    TOKENIZER_LOCAL_PATH,
+    TOKENIZER_MODEL_NAME,
+)
 
 # Docling imports
 from docling.document_converter import DocumentConverter
@@ -18,6 +24,29 @@ from transformers import AutoTokenizer
 from urllib.parse import unquote
 
 logger = get_logger(__name__)
+
+
+def _load_docling_tokenizer():
+    """
+    Load the tokenizer required by Docling's HybridChunker from a local cache.
+    """
+    tokenizer_source = TOKENIZER_LOCAL_PATH if TOKENIZER_LOCAL_PATH.exists() else TOKENIZER_MODEL_NAME
+    try:
+        logger.info(f"Loading Docling tokenizer from: {tokenizer_source}")
+        return AutoTokenizer.from_pretrained(
+            tokenizer_source,
+            cache_dir=str(MODEL_CACHE_DIR),
+            local_files_only=HF_LOCAL_FILES_ONLY,
+        )
+    except Exception as exc:
+        user_message = (
+            "Failed to load the Docling tokenizer from the local cache. "
+            "Run `python pre_download_model.py` while online to populate the cache."
+        )
+        logger.exception(f"{user_message} Details: {exc}")
+        st.error(user_message)
+        return None
+
 
 def save_uploaded_file(uploaded_file, storage_path=PDF_STORAGE_PATH):
     # Create the storage directory if it doesn't exist
@@ -134,9 +163,10 @@ def chunk_documents(raw_documents, storage_path=PDF_STORAGE_PATH, classify=False
 
     try:
         converter = DocumentConverter()
-        hf_tokenizer = HuggingFaceTokenizer(
-            tokenizer=AutoTokenizer.from_pretrained("sentence-transformers/all-MiniLM-L6-v2")
-        )
+        tokenizer = _load_docling_tokenizer()
+        if tokenizer is None:
+            return [], [], []
+        hf_tokenizer = HuggingFaceTokenizer(tokenizer=tokenizer)
         chunker = HybridChunker(tokenizer=hf_tokenizer, merge_peers=True)
 
         all_chunks = []
