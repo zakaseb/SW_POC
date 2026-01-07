@@ -1,4 +1,8 @@
 import os
+
+# Avoid inotify watcher exhaustion on systems with low watch limits
+os.environ.setdefault("STREAMLIT_WATCHER_TYPE", "poll")
+
 import streamlit as st
 from rank_bm25 import BM25Okapi
 import pandas as pd
