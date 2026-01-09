@@ -124,7 +124,7 @@ Follow this when you need everything to run with no network access. It assumes y
 
 ### A. One-time prep while online
 
-1. From the project root, activate your virtualenv and cache all Hugging Face assets:
+1. From the project root, activate your virtualenv and cache all Hugging Face assets from the internet:
 
    ```
    python pre_download_model.py
