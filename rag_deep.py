@@ -1,7 +1,8 @@
 import os
 
-# Avoid inotify watcher exhaustion on systems with low watch limits
-os.environ.setdefault("STREAMLIT_WATCHER_TYPE", "poll")
+# Force polling watcher to avoid inotify limits on Linux hosts
+os.environ["STREAMLIT_WATCHER_TYPE"] = "poll"
+os.environ.setdefault("WATCHDOG_MAX_THREADS", "1")
 
 import streamlit as st
 from rank_bm25 import BM25Okapi

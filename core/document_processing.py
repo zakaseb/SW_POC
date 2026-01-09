@@ -1,4 +1,5 @@
 import os
+from pathlib import Path
 import streamlit as st
 from langchain_community.document_loaders import PDFPlumberLoader
 from langchain_core.documents import Document as LangchainDocument
@@ -26,10 +27,53 @@ from urllib.parse import unquote
 logger = get_logger(__name__)
 
 
+def _resolve_max_tokens(tokenizer) -> int:
+    """
+    Determine a safe max token length for Docling's HF tokenizer without
+    hitting the Hub (offline-safe). Falls back to 512 if unavailable.
+    """
+    try:
+        max_len = getattr(tokenizer, "model_max_length", None)
+        if max_len and max_len != float("inf"):
+            # cap to a sane value to avoid giant defaults (e.g., 1e12)
+            return int(min(max_len, 1024))
+    except Exception:
+        pass
+    return 512
+
+
+def _ensure_local_tokenizer_assets() -> bool:
+    """
+    Verify required tokenizer files exist when running in offline mode.
+    """
+    if not HF_LOCAL_FILES_ONLY:
+        return True
+
+    required_files = [
+        "config.json",
+        "tokenizer.json",
+        "sentence_bert_config.json",
+    ]
+    missing = [f for f in required_files if not (TOKENIZER_LOCAL_PATH / f).exists()]
+    if missing:
+        user_message = (
+            "Offline mode requires cached tokenizer assets. "
+            f"Missing files at {TOKENIZER_LOCAL_PATH}: {', '.join(missing)}. "
+            "Run `python pre_download_model.py` while online to populate the cache."
+        )
+        logger.error(user_message)
+        st.error(user_message)
+        return False
+    return True
+
+
 def _load_docling_tokenizer():
     """
     Load the tokenizer required by Docling's HybridChunker from a local cache.
     """
+    if not _ensure_local_tokenizer_assets():
+        return None
+
     tokenizer_source = TOKENIZER_LOCAL_PATH if TOKENIZER_LOCAL_PATH.exists() else TOKENIZER_MODEL_NAME
     try:
         logger.info(f"Loading Docling tokenizer from: {tokenizer_source}")
@@ -166,7 +210,8 @@ def chunk_documents(raw_documents, storage_path=PDF_STORAGE_PATH, classify=False
         tokenizer = _load_docling_tokenizer()
         if tokenizer is None:
             return [], [], []
-        hf_tokenizer = HuggingFaceTokenizer(tokenizer=tokenizer)
+        max_tokens = _resolve_max_tokens(tokenizer)
+        hf_tokenizer = HuggingFaceTokenizer(tokenizer=tokenizer, max_tokens=max_tokens)
         chunker = HybridChunker(tokenizer=hf_tokenizer, merge_peers=True)
 
         all_chunks = []
