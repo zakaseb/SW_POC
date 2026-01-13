@@ -176,9 +176,7 @@ RERANKER_MODEL_NAME         = "cross-encoder/ms-marco-MiniLM-L-6-v2"
 # Local HF cache + offline guardrails
 MODEL_CACHE_DIR          = Path("./models")
 HF_LOCAL_FILES_ONLY      = True  # avoid network calls at runtime
-RERANKER_LOCAL_PATH      = MODEL_CACHE_DIR / "cross-encoder-ms-marco-MiniLM-L-6-v2"
 TOKENIZER_MODEL_NAME     = "sentence-transformers/all-MiniLM-L6-v2"
-TOKENIZER_LOCAL_PATH     = MODEL_CACHE_DIR / "sentence-transformers-all-MiniLM-L6-v2"
 
 # Storage
 BASE_STORE               = Path("./document_store")
@@ -206,6 +204,18 @@ if os.path.exists(_local_path):
                 globals()[k] = v
     except Exception:
         pass
+
+# Recompute cache-dependent paths AFTER applying local overrides
+def _as_path(val):
+    return val if isinstance(val, Path) else Path(val)
+
+MODEL_CACHE_DIR = _as_path(MODEL_CACHE_DIR)
+
+def _repo_cache_dir(repo_id: str) -> Path:
+    return MODEL_CACHE_DIR / repo_id.replace("/", "-")
+
+RERANKER_LOCAL_PATH  = _repo_cache_dir(RERANKER_MODEL_NAME)
+TOKENIZER_LOCAL_PATH = _repo_cache_dir(TOKENIZER_MODEL_NAME)
 
 # ========== Utilities shared by API + App ==========
 def _normalize_url(url: str, default_port: int) -> str:
