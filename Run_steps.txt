@@ -117,3 +117,64 @@ Streamlit will print the local URL, for example:
 Open that URL in your browser to use the GUI.
 
 ---
+
+## 5. Offline Run (no internet required)
+
+Follow this when you need everything to run with no network access. It assumes you have the offline cache support (feature/offline-mode or later).
+
+### A. One-time prep while online
+
+1. From the project root, activate your virtualenv and cache all Hugging Face assets from the internet:
+
+   ```
+   python pre_download_model.py
+   ```
+
+   This downloads the CrossEncoder reranker and Docling tokenizer into `./models/`.
+
+2. Pull the Ollama model(s) you intend to use (repeat for any additional tags):
+
+   ```
+   ollama pull mistral:7b
+   ```
+
+3. Verify the cache folder exists and is populated:
+
+   ```
+   ls -la models
+   ```
+
+4. Once the above is done, you can disconnect from the network.
+
+### B. Run fully offline (no proxies, no Postman needed)
+
+Use three terminals similar to Sections 2–4, but do **not** set any proxy variables and skip Postman entirely.
+
+**Terminal 1 – Ollama**
+
+```
+ollama serve
+```
+
+**Terminal 2 – FastAPI wrapper**
+
+```
+cd ~/wrapper/SW_POC
+source venv/bin/activate
+unset HTTP_PROXY HTTPS_PROXY NO_PROXY  # ensure no proxy is used
+python -m uvicorn core.api:app --host 0.0.0.0 --port 8000
+```
+
+**Terminal 3 – Streamlit**
+
+```
+cd ~/wrapper/SW_POC
+source venv/bin/activate
+unset HTTP_PROXY HTTPS_PROXY NO_PROXY  # keep proxies off
+streamlit run rag_deep.py
+```
+
+Notes:
+
+- The app is configured with `HF_LOCAL_FILES_ONLY=True` so it will refuse to fetch from Hugging Face; missing caches will show a clear error telling you to run `pre_download_model.py` while online.
+- Ensure `models/` and your Ollama model pulls are available locally before going offline.

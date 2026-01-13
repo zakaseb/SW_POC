@@ -9,10 +9,20 @@ from .config import (
     OLLAMA_EMBEDDING_MODEL_NAME,
     OLLAMA_LLM_NAME,
     RERANKER_MODEL_NAME,
+    RERANKER_LOCAL_PATH,
+    MODEL_CACHE_DIR,
+    HF_LOCAL_FILES_ONLY,
 )
 from .logger_config import get_logger
 
 logger = get_logger(__name__)
+
+
+def _reranker_source() -> str:
+    """Prefer a locally cached reranker checkpoint when available."""
+    if RERANKER_LOCAL_PATH and RERANKER_LOCAL_PATH.exists():
+        return str(RERANKER_LOCAL_PATH)
+    return RERANKER_MODEL_NAME
 
 
 def _ollama_up(base_url: str) -> bool:
@@ -122,13 +132,20 @@ def get_reranker_model():
     """
     logger.info(f"Attempting to load CrossEncoder model: {RERANKER_MODEL_NAME}")
     try:
-        model = CrossEncoder(RERANKER_MODEL_NAME)
-        logger.info(f"CrossEncoder model {RERANKER_MODEL_NAME} loaded successfully.")
+        source = _reranker_source()
+        model = CrossEncoder(
+            source,
+            local_files_only=HF_LOCAL_FILES_ONLY,
+            cache_folder=str(MODEL_CACHE_DIR),
+        )
+        logger.info(f"CrossEncoder model loaded successfully from: {source}")
         return model
     except Exception as e:
         user_message = (
-            f"Error loading CrossEncoder model '{RERANKER_MODEL_NAME}'. Re-ranking will be disabled."
+            f"Error loading CrossEncoder model '{_reranker_source()}'. Re-ranking will be disabled."
         )
+        if HF_LOCAL_FILES_ONLY:
+            user_message += " Ensure required Hugging Face assets are pre-downloaded via pre_download_model.py."
         logger.exception(f"{user_message} Details: {e}")
         st.error(f"{user_message} Check logs for details.")
         return None

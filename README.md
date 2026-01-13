@@ -186,13 +186,13 @@ python manage_users.py add   # prompts for username and password
 python manage_users.py list  # optional sanity check
 ```
 
-### 6. Pre-download the reranker (optional but recommended)
+### 6. Pre-download Hugging Face assets (recommended, required for offline)
 
 ```bash
 python pre_download_model.py
 ```
 
-This caches `cross-encoder/ms-marco-MiniLM-L-6-v2` so the first chat run does not block on model downloads.
+This caches `cross-encoder/ms-marco-MiniLM-L-6-v2` and the Docling tokenizer under `models/` so the first chat run does not block on downloads. Pull your Ollama models separately (e.g., `ollama pull mistral:7b`).
 
 ---
 
@@ -209,6 +209,11 @@ All configuration values live in `core/config.py`. You can override them via:
 | `OLLAMA_EMBEDDING_MODEL_NAME` | Ollama model tag used for embeddings. Must support `/api/embeddings`. | `mistral:7b` |
 | `OLLAMA_LLM_NAME` | Ollama model used for answer & requirement generation. | `mistral:7b` |
 | `RERANKER_MODEL_NAME` | `sentence-transformers` CrossEncoder checkpoint. | `cross-encoder/ms-marco-MiniLM-L-6-v2` |
+| `MODEL_CACHE_DIR` | Local folder where Hugging Face assets are stored. | `./models` |
+| `HF_LOCAL_FILES_ONLY` | Prevent HF network calls at runtime (offline mode). | `True` |
+| `RERANKER_LOCAL_PATH` | On-disk path expected for the CrossEncoder. | `models/cross-encoder-ms-marco-MiniLM-L-6-v2` |
+| `TOKENIZER_MODEL_NAME` | HF tokenizer used by Docling’s HybridChunker. | `sentence-transformers/all-MiniLM-L6-v2` |
+| `TOKENIZER_LOCAL_PATH` | On-disk path expected for the Docling tokenizer. | `models/sentence-transformers-all-MiniLM-L6-v2` |
 | `PDF_STORAGE_PATH` | Root folder for uploaded working files. | `document_store/pdfs` |
 | `CONTEXT_PDF_STORAGE_PATH` | Folder for persistent context docs (`Verification Methods.docx`, sidebar uploads). | `document_store/context_pdfs` |
 | `MEMORY_FILE_PATH` | Reserved path for long-term memory artifacts (not currently used). | `document_store/memory/context.json` |
@@ -218,6 +223,17 @@ All configuration values live in `core/config.py`. You can override them via:
 | `RAG_API_KEY` | Optional auth token if you gate the wrapper. | `""` |
 | `POSTMAN_PROXY` | Set to `http://127.0.0.1:<port>` to route wrapper→Ollama calls through a proxy such as Postman. | unset |
 | `LOG_LEVEL` | Logging level consumed by `core/logger_config.py`. | `INFO` |
+
+---
+
+## Offline Mode Checklist
+
+Follow this once while online to ensure the app runs without internet:
+
+1. `python pre_download_model.py` to cache the reranker and Docling tokenizer into `models/`.
+2. Pull your Ollama models locally, e.g., `ollama pull mistral:7b` (and any alternate tags you configure).
+3. Keep `HF_LOCAL_FILES_ONLY=True` (default) so the app refuses to fetch from Hugging Face at runtime; caches live under `MODEL_CACHE_DIR`.
+4. Run Streamlit / FastAPI normally. If a model is missing, the UI surfaces an explicit error pointing back to the cache script.
 
 ---
 

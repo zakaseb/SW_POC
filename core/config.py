@@ -173,6 +173,10 @@ Classification:
 OLLAMA_EMBEDDING_MODEL_NAME = "mistral:7b"  
 OLLAMA_LLM_NAME             = "mistral:7b"
 RERANKER_MODEL_NAME         = "cross-encoder/ms-marco-MiniLM-L-6-v2"
+# Local HF cache + offline guardrails
+MODEL_CACHE_DIR          = Path("./models")
+HF_LOCAL_FILES_ONLY      = True  # avoid network calls at runtime
+TOKENIZER_MODEL_NAME     = "sentence-transformers/all-MiniLM-L6-v2"
 
 # Storage
 BASE_STORE               = Path("./document_store")
@@ -201,6 +205,18 @@ if os.path.exists(_local_path):
     except Exception:
         pass
 
+# Recompute cache-dependent paths AFTER applying local overrides
+def _as_path(val):
+    return val if isinstance(val, Path) else Path(val)
+
+MODEL_CACHE_DIR = _as_path(MODEL_CACHE_DIR)
+
+def _repo_cache_dir(repo_id: str) -> Path:
+    return MODEL_CACHE_DIR / repo_id.replace("/", "-")
+
+RERANKER_LOCAL_PATH  = _repo_cache_dir(RERANKER_MODEL_NAME)
+TOKENIZER_LOCAL_PATH = _repo_cache_dir(TOKENIZER_MODEL_NAME)
+
 # ========== Utilities shared by API + App ==========
 def _normalize_url(url: str, default_port: int) -> str:
     """Force IPv4 for 'localhost' and ensure a port is present."""
@@ -219,6 +235,14 @@ API_URL    = _normalize_url(RAG_API_BASE,    8000)
 # export POSTMAN_PROXY=http://127.0.0.1:5559
 POSTMAN_PROXY = os.getenv("POSTMAN_PROXY") 
 
+# HF offline/caching env hints (harmless if already set)
+MODEL_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+if HF_LOCAL_FILES_ONLY:
+    os.environ.setdefault("HF_HUB_OFFLINE", "1")
+    os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
+    os.environ.setdefault("HF_HOME", str(MODEL_CACHE_DIR))
+    os.environ.setdefault("TRANSFORMERS_CACHE", str(MODEL_CACHE_DIR))
+
 # Ensure directories exist
-for p in (PDF_STORAGE_PATH, CONTEXT_PDF_STORAGE_PATH, Path(MEMORY_FILE_PATH).parent, REQUIREMENTS_OUTPUT_PATH):
+for p in (PDF_STORAGE_PATH, CONTEXT_PDF_STORAGE_PATH, Path(MEMORY_FILE_PATH).parent, REQUIREMENTS_OUTPUT_PATH, MODEL_CACHE_DIR):
     Path(p).mkdir(parents=True, exist_ok=True)
