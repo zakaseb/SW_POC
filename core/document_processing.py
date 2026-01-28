@@ -25,7 +25,7 @@ from docling_core.transforms.chunker.tokenizer.huggingface import HuggingFaceTok
 from docling_core.types import DoclingDocument
 from docling_core.types.doc import DocItemLabel
 from transformers import AutoTokenizer
-from urllib.parse import unquote
+from urllib.parse import unquote, urlparse
 
 logger = get_logger(__name__)
 
@@ -110,6 +110,28 @@ def _build_docling_document_from_text(text_blocks: list[str], document_name: str
         for paragraph in _split_text_blocks(block):
             doc.add_text(label=DocItemLabel.TEXT, text=paragraph)
     return doc
+
+
+def _normalize_source_path(source_path: str) -> str:
+    """Normalize file paths that may be URL-encoded or file:// URLs."""
+    cleaned = unquote(source_path)
+    if cleaned.startswith("file://"):
+        parsed = urlparse(cleaned)
+        if parsed.path:
+            cleaned = parsed.path
+    if "?" in cleaned:
+        cleaned = cleaned.split("?", 1)[0]
+    if "#" in cleaned:
+        cleaned = cleaned.split("#", 1)[0]
+    return cleaned
+
+
+def _is_pdf_source(source_path: str, source_docs: list[LangchainDocument]) -> bool:
+    normalized = _normalize_source_path(source_path)
+    if Path(normalized).suffix.lower() == ".pdf":
+        return True
+    # Fallback: PDFPlumberLoader adds page metadata; use that to detect PDFs.
+    return any("page" in doc.metadata or "total_pages" in doc.metadata for doc in source_docs)
 
 
 def save_uploaded_file(uploaded_file, storage_path=PDF_STORAGE_PATH):
@@ -247,18 +269,19 @@ def chunk_documents(raw_documents, storage_path=PDF_STORAGE_PATH, classify=False
             docs_by_source.setdefault(source_path, []).append(doc)
 
         for source_path, source_docs in docs_by_source.items():
-            file_extension = Path(source_path).suffix.lower()
             doc_metadata = source_docs[0].metadata
+            normalized_source = _normalize_source_path(source_path)
+            is_pdf_source = _is_pdf_source(source_path, source_docs)
 
-            if file_extension == ".pdf":
+            if is_pdf_source:
                 text_blocks = [d.page_content for d in source_docs if d.page_content and d.page_content.strip()]
                 if not text_blocks:
                     logger.warning(f"No extractable text found for PDF '{source_path}'.")
                     continue
-                doc_name = Path(source_path).stem or "document"
+                doc_name = Path(normalized_source or source_path).stem or "document"
                 dl_doc = _build_docling_document_from_text(text_blocks, doc_name)
             else:
-                full_path = source_path
+                full_path = normalized_source or source_path
                 if not os.path.exists(full_path):
                     logger.warning(
                         f"Source path '{full_path}' not found. Attempting to resolve with storage path '{storage_path}'."
