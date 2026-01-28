@@ -259,6 +259,7 @@ def test_load_document_pdf_syntax_error(
 @patch('os.path.exists', return_value=True)
 def test_chunk_documents_success(mock_exists, mock_tokenizer, mock_chunker, mock_converter, mock_logger_fixture):
     # Setup mock converter and chunker behavior
+    mock_tokenizer.return_value.model_max_length = 512
     mock_dl_doc = MagicMock()
     mock_converter.return_value.convert.return_value.document = mock_dl_doc
 
@@ -269,7 +270,7 @@ def test_chunk_documents_success(mock_exists, mock_tokenizer, mock_chunker, mock
 
     raw_docs = [
         LangchainDocument(
-            page_content="This is a long document.", metadata={"source": "/fake/path/test.pdf"}
+            page_content="This is a long document.", metadata={"source": "/fake/path/test.docx"}
         )
     ]
 
@@ -302,11 +303,12 @@ def test_chunk_documents_empty_raw_docs(mock_st_warning, mock_logger_fixture):
 def test_chunk_documents_no_chunks_returned(
     mock_exists, mock_tokenizer, mock_chunker, mock_converter, mock_logger_fixture
 ):
+    mock_tokenizer.return_value.model_max_length = 512
     mock_dl_doc = MagicMock()
     mock_converter.return_value.convert.return_value.document = mock_dl_doc
     mock_chunker.return_value.chunk.return_value = [] # No chunks
 
-    raw_docs = [LangchainDocument(page_content=".", metadata={"source": "/fake/path/doc.pdf"})]
+    raw_docs = [LangchainDocument(page_content=".", metadata={"source": "/fake/path/doc.docx"})]
     chunks = chunk_documents(raw_docs)
 
     assert chunks == []
@@ -318,12 +320,43 @@ def test_chunk_documents_no_chunks_returned(
 def test_chunk_documents_exception(
     mock_st_error, mock_converter_exception, mock_logger_fixture
 ):
-    raw_docs = [LangchainDocument(page_content="Some content", metadata={"source": "/fake/path/doc.pdf"})]
+    raw_docs = [LangchainDocument(page_content="Some content", metadata={"source": "/fake/path/doc.docx"})]
     chunks = chunk_documents(raw_docs)
 
     assert chunks == []
     mock_st_error.assert_called_once()
     mock_logger_fixture.exception.assert_called_once()
+
+
+@patch('core.document_processing.DocumentConverter')
+@patch('core.document_processing.HybridChunker')
+@patch('core.document_processing.AutoTokenizer.from_pretrained')
+def test_chunk_documents_pdf_text_fallback(
+    mock_tokenizer, mock_chunker, mock_converter, mock_logger_fixture
+):
+    mock_tokenizer.return_value.model_max_length = 512
+    mock_chunk_obj = MagicMock()
+    mock_chunk_obj.text = "chunked content"
+    mock_chunk_obj.meta.headings = []
+    mock_chunker.return_value.chunk.return_value = [mock_chunk_obj]
+
+    raw_docs = [
+        LangchainDocument(
+            page_content="Page one text.",
+            metadata={"source": "/fake/path/test.pdf", "page": 1},
+        ),
+        LangchainDocument(
+            page_content="Page two text.",
+            metadata={"source": "/fake/path/test.pdf", "page": 2},
+        ),
+    ]
+
+    chunks = chunk_documents(raw_docs)
+
+    assert len(chunks) == 1
+    assert chunks[0].page_content == "chunked content"
+    assert chunks[0].metadata["source"] == "/fake/path/test.pdf"
+    mock_converter.return_value.convert.assert_not_called()
 
 
 # --- Tests for index_documents (from previous step, confirmed good) ---

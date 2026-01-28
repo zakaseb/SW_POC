@@ -1,4 +1,5 @@
 import os
+import re
 from pathlib import Path
 import streamlit as st
 from langchain_community.document_loaders import PDFPlumberLoader
@@ -21,6 +22,8 @@ from .config import (
 from docling.document_converter import DocumentConverter
 from docling.chunking import HybridChunker
 from docling_core.transforms.chunker.tokenizer.huggingface import HuggingFaceTokenizer
+from docling_core.types import DoclingDocument
+from docling_core.types.doc import DocItemLabel
 from transformers import AutoTokenizer
 from urllib.parse import unquote
 
@@ -90,6 +93,23 @@ def _load_docling_tokenizer():
         logger.exception(f"{user_message} Details: {exc}")
         st.error(user_message)
         return None
+
+
+def _split_text_blocks(text: str) -> list[str]:
+    """Split raw text into paragraph-like blocks for chunking."""
+    return [block.strip() for block in re.split(r"\n\s*\n", text) if block.strip()]
+
+
+def _build_docling_document_from_text(text_blocks: list[str], document_name: str) -> DoclingDocument:
+    """
+    Build a minimal DoclingDocument from extracted text blocks to avoid
+    requiring PDF layout models when running offline.
+    """
+    doc = DoclingDocument(name=document_name or "document")
+    for block in text_blocks:
+        for paragraph in _split_text_blocks(block):
+            doc.add_text(label=DocItemLabel.TEXT, text=paragraph)
+    return doc
 
 
 def save_uploaded_file(uploaded_file, storage_path=PDF_STORAGE_PATH):
@@ -219,19 +239,35 @@ def chunk_documents(raw_documents, storage_path=PDF_STORAGE_PATH, classify=False
         requirements_chunks = []
         processed_chunk_texts = set()
 
+        docs_by_source: dict[str, list[LangchainDocument]] = {}
         for doc in raw_documents:
             source_path = doc.metadata.get("source")
             if not source_path:
                 raise ValueError("Document is missing 'source' metadata.")
+            docs_by_source.setdefault(source_path, []).append(doc)
 
-            full_path = source_path
-            if not os.path.exists(full_path):
-                logger.warning(f"Source path '{full_path}' not found. Attempting to resolve with storage path '{storage_path}'.")
-                full_path = os.path.join(storage_path, os.path.basename(source_path))
+        for source_path, source_docs in docs_by_source.items():
+            file_extension = Path(source_path).suffix.lower()
+            doc_metadata = source_docs[0].metadata
+
+            if file_extension == ".pdf":
+                text_blocks = [d.page_content for d in source_docs if d.page_content and d.page_content.strip()]
+                if not text_blocks:
+                    logger.warning(f"No extractable text found for PDF '{source_path}'.")
+                    continue
+                doc_name = Path(source_path).stem or "document"
+                dl_doc = _build_docling_document_from_text(text_blocks, doc_name)
+            else:
+                full_path = source_path
                 if not os.path.exists(full_path):
-                    raise FileNotFoundError(f"Resolved file path does not exist: {full_path}")
+                    logger.warning(
+                        f"Source path '{full_path}' not found. Attempting to resolve with storage path '{storage_path}'."
+                    )
+                    full_path = os.path.join(storage_path, os.path.basename(source_path))
+                    if not os.path.exists(full_path):
+                        raise FileNotFoundError(f"Resolved file path does not exist: {full_path}")
+                dl_doc = converter.convert(source=full_path).document
 
-            dl_doc = converter.convert(source=full_path).document
             chunks = list(chunker.chunk(dl_doc))
             logger.info(f"Number of chunks before deduplication: {len(chunks)}")
 
@@ -253,21 +289,21 @@ def chunk_documents(raw_documents, storage_path=PDF_STORAGE_PATH, classify=False
                         general_context_chunks.append(
                             LangchainDocument(
                                 page_content=chunk_text,
-                                metadata={**doc.metadata, "headings": c.meta.headings, "in_memory": True},
+                                metadata={**doc_metadata, "headings": c.meta.headings, "in_memory": True},
                             )
                         )
                     else:
                         requirements_chunks.append(
                             LangchainDocument(
                                 page_content=chunk_text,
-                                metadata={**doc.metadata, "headings": c.meta.headings, "in_memory": False},
+                                metadata={**doc_metadata, "headings": c.meta.headings, "in_memory": False},
                             )
                         )
                 else:
                     all_chunks.append(
                         LangchainDocument(
                             page_content=chunk_text,
-                            metadata={**doc.metadata, "headings": c.meta.headings, "in_memory": False},
+                            metadata={**doc_metadata, "headings": c.meta.headings, "in_memory": False},
                         )
                     )
 
