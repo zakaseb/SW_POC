@@ -126,8 +126,12 @@ def _normalize_source_path(source_path: str) -> str:
     return cleaned
 
 
-def _is_pdf_source(source_path: str, source_docs: list[LangchainDocument]) -> bool:
-    normalized = _normalize_source_path(source_path)
+def _is_pdf_source(
+    source_path: str,
+    source_docs: list[LangchainDocument],
+    normalized_source: str | None = None,
+) -> bool:
+    normalized = normalized_source or _normalize_source_path(source_path)
     if Path(normalized).suffix.lower() == ".pdf":
         return True
     # Fallback: PDFPlumberLoader adds page metadata; use that to detect PDFs.
@@ -271,7 +275,7 @@ def chunk_documents(raw_documents, storage_path=PDF_STORAGE_PATH, classify=False
         for source_path, source_docs in docs_by_source.items():
             doc_metadata = source_docs[0].metadata
             normalized_source = _normalize_source_path(source_path)
-            is_pdf_source = _is_pdf_source(source_path, source_docs)
+            is_pdf_source = _is_pdf_source(source_path, source_docs, normalized_source)
 
             if is_pdf_source:
                 text_blocks = [d.page_content for d in source_docs if d.page_content and d.page_content.strip()]
