@@ -278,7 +278,7 @@ def test_chunk_documents_success(mock_exists, mock_tokenizer, mock_chunker, mock
 
     assert len(chunks) == 1
     assert chunks[0].page_content == "chunked content"
-    assert chunks[0].metadata["source"] == "/fake/path/test.pdf"
+    assert chunks[0].metadata["source"] == "/fake/path/test.docx"
     assert chunks[0].metadata["headings"] == ["Header 1"]
     mock_logger_fixture.info.assert_any_call("Starting Docling hybrid chunking on 1 document(s).")
     mock_logger_fixture.info.assert_any_call("Docling hybrid chunking complete: 1 chunks created.")
