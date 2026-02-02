@@ -5,6 +5,7 @@ os.environ["STREAMLIT_WATCHER_TYPE"] = "poll"
 os.environ.setdefault("WATCHDOG_MAX_THREADS", "1")
 
 import streamlit as st
+import time
 from rank_bm25 import BM25Okapi
 import pandas as pd
 import json
@@ -159,6 +160,9 @@ def _split_paras(text: str, max_chars: int = 900, overlap: int = 120):
     return out
 
 
+JOB_STATUS_POLL_SECONDS = 3
+
+
 def refresh_requirement_job_state():
     """Load the latest requirement job status and artifacts for the logged-in user."""
     user_id = st.session_state.get("user_id")
@@ -166,7 +170,15 @@ def refresh_requirement_job_state():
         return
 
     latest_job = get_latest_requirement_job(user_id)
+    previous_job_id = st.session_state.get("latest_requirement_job_id")
+    latest_job_id = latest_job.get("id") if latest_job else None
+    st.session_state.latest_requirement_job_id = latest_job_id
     st.session_state.latest_requirement_job = latest_job
+
+    if latest_job_id != previous_job_id:
+        st.session_state.pop("excel_file_data", None)
+        st.session_state.pop("generated_requirements", None)
+        st.session_state.pop("latest_requirement_job_error", None)
 
     if not latest_job:
         st.session_state.pop("latest_requirement_job_error", None)
@@ -180,10 +192,22 @@ def refresh_requirement_job_state():
         requirements_payload = load_job_requirements(latest_job)
         if requirements_payload:
             st.session_state.generated_requirements = requirements_payload
+    else:
+        st.session_state.pop("excel_file_data", None)
+        st.session_state.pop("generated_requirements", None)
     if status == "failed":
         st.session_state.latest_requirement_job_error = latest_job.get("error_message")
     else:
         st.session_state.pop("latest_requirement_job_error", None)
+
+
+def schedule_job_status_refresh():
+    """Auto-refresh the UI while a requirement job is running."""
+    job_info = st.session_state.get("latest_requirement_job")
+    status = job_info.get("status") if job_info else None
+    if status in {"queued", "running"}:
+        time.sleep(JOB_STATUS_POLL_SECONDS)
+        st.rerun()
 
 # ---------------------------------
 # App Styling with CSS
@@ -690,3 +714,5 @@ else:
     st.info(
         "Please upload one or more PDF, DOCX, or TXT documents to begin your session and ask questions."
     )
+
+schedule_job_status_refresh()
