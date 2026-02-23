@@ -100,6 +100,22 @@ def _split_text_blocks(text: str) -> list[str]:
     return [block.strip() for block in re.split(r"\n\s*\n", text) if block.strip()]
 
 
+def _format_section(headings) -> str:
+    """
+    Extract the most specific section number (e.g. 3.1.2) from Docling chunk headings.
+    Returns empty string if no section number pattern is found.
+    """
+    if not headings:
+        return ""
+    section_pattern = re.compile(r"\d+(?:\.\d+)*")
+    for heading in reversed(headings):  # Start from most specific (last heading)
+        if isinstance(heading, str) and heading.strip():
+            match = section_pattern.search(heading)
+            if match:
+                return match.group(0)
+    return ""
+
+
 def _build_docling_document_from_text(text_blocks: list[str], document_name: str) -> DoclingDocument:
     """
     Build a minimal DoclingDocument from extracted text blocks to avoid
@@ -277,13 +293,22 @@ def chunk_documents(raw_documents, storage_path=PDF_STORAGE_PATH, classify=False
             normalized_source = _normalize_source_path(source_path)
             is_pdf_source = _is_pdf_source(source_path, source_docs, normalized_source)
 
+            chunk_batches: list[tuple[DoclingDocument, int | None, dict]] = []
             if is_pdf_source:
-                text_blocks = [d.page_content for d in source_docs if d.page_content and d.page_content.strip()]
-                if not text_blocks:
+                # Sort by page to maintain order; process page-by-page to preserve page numbers
+                sorted_docs = sorted(
+                    [d for d in source_docs if d.page_content and d.page_content.strip()],
+                    key=lambda d: d.metadata.get("page", 0),
+                )
+                if not sorted_docs:
                     logger.warning(f"No extractable text found for PDF '{source_path}'.")
                     continue
                 doc_name = Path(normalized_source or source_path).stem or "document"
-                dl_doc = _build_docling_document_from_text(text_blocks, doc_name)
+                for page_doc in sorted_docs:
+                    page_raw = page_doc.metadata.get("page", 0)
+                    page_num = (page_raw + 1) if isinstance(page_raw, int) else None
+                    dl_doc = _build_docling_document_from_text([page_doc.page_content], doc_name)
+                    chunk_batches.append((dl_doc, page_num, doc_metadata))
             else:
                 full_path = normalized_source or source_path
                 if not os.path.exists(full_path):
@@ -294,45 +319,54 @@ def chunk_documents(raw_documents, storage_path=PDF_STORAGE_PATH, classify=False
                     if not os.path.exists(full_path):
                         raise FileNotFoundError(f"Resolved file path does not exist: {full_path}")
                 dl_doc = converter.convert(source=full_path).document
+                chunk_batches.append((dl_doc, None, doc_metadata))
 
-            chunks = list(chunker.chunk(dl_doc))
-            logger.info(f"Number of chunks before deduplication: {len(chunks)}")
+            for dl_doc, page_num, batch_metadata in chunk_batches:
+                chunks = list(chunker.chunk(dl_doc))
+                logger.info(f"Number of chunks before deduplication: {len(chunks)}")
 
-            for i, c in enumerate(chunks):
-                chunk_text = c.text.strip()
-                if not chunk_text or chunk_text in processed_chunk_texts:
-                    continue
+                for i, c in enumerate(chunks):
+                    chunk_text = c.text.strip()
+                    if not chunk_text or chunk_text in processed_chunk_texts:
+                        continue
 
-                processed_chunk_texts.add(chunk_text)
+                    processed_chunk_texts.add(chunk_text)
+                    section = _format_section(getattr(c.meta, "headings", None) or [])
+                    chunk_meta = {
+                        **batch_metadata,
+                        "headings": getattr(c.meta, "headings", None) or [],
+                        "page_number": page_num,
+                        "section": section,
+                    }
 
-                if classify:
-                    language_model = get_language_model()
-                    classification = classify_chunk(language_model, chunk_text)
-                    print(f"--- Chunk {i+1} ---")
-                    print(f"Classification: {classification}")
-                    print(f"Text: {chunk_text}")
-                    print("--------------------")
-                    if classification == "General Context":
-                        general_context_chunks.append(
-                            LangchainDocument(
-                                page_content=chunk_text,
-                                metadata={**doc_metadata, "headings": c.meta.headings, "in_memory": True},
+                    if classify:
+                        language_model = get_language_model()
+                        classification = classify_chunk(language_model, chunk_text)
+                        print(f"--- Chunk {i+1} ---")
+                        print(f"Classification: {classification}")
+                        print(f"Text: {chunk_text}")
+                        print("--------------------")
+                        if classification == "General Context":
+                            general_context_chunks.append(
+                                LangchainDocument(
+                                    page_content=chunk_text,
+                                    metadata={**chunk_meta, "in_memory": True},
+                                )
                             )
-                        )
+                        else:
+                            requirements_chunks.append(
+                                LangchainDocument(
+                                    page_content=chunk_text,
+                                    metadata={**chunk_meta, "in_memory": False},
+                                )
+                            )
                     else:
-                        requirements_chunks.append(
+                        all_chunks.append(
                             LangchainDocument(
                                 page_content=chunk_text,
-                                metadata={**doc_metadata, "headings": c.meta.headings, "in_memory": False},
+                                metadata={**chunk_meta, "in_memory": False},
                             )
                         )
-                else:
-                    all_chunks.append(
-                        LangchainDocument(
-                            page_content=chunk_text,
-                            metadata={**doc_metadata, "headings": c.meta.headings, "in_memory": False},
-                        )
-                    )
 
         if classify:
             logger.info(f"Docling hybrid chunking and classification complete.")

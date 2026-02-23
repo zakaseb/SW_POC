@@ -343,11 +343,11 @@ def test_chunk_documents_pdf_text_fallback(
     raw_docs = [
         LangchainDocument(
             page_content="Page one text.",
-            metadata={"source": "file:///fake/path/test.pdf", "page": 1},
+            metadata={"source": "file:///fake/path/test.pdf", "page": 0},
         ),
         LangchainDocument(
             page_content="Page two text.",
-            metadata={"source": "file:///fake/path/test.pdf", "page": 2},
+            metadata={"source": "file:///fake/path/test.pdf", "page": 1},
         ),
     ]
 
@@ -356,6 +356,8 @@ def test_chunk_documents_pdf_text_fallback(
     assert len(chunks) == 1
     assert chunks[0].page_content == "chunked content"
     assert chunks[0].metadata["source"] == "file:///fake/path/test.pdf"
+    assert chunks[0].metadata["page_number"] == 1  # 0-indexed + 1 = first page
+    assert chunks[0].metadata["section"] == ""
     mock_converter.return_value.convert.assert_not_called()
 
 

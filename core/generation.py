@@ -197,18 +197,40 @@ def parse_requirements_payload(requirements_json_list):
     return all_requirements
 
 
-def generate_excel_file(requirements_json_list):
+def parse_requirements_payload_from_chunks(chunk_results):
     """
-    Parses a list of JSON strings, cleans them, and generates an Excel file in memory.
+    Parses chunk results (each with json, page_number, section) into a list of requirement
+    dictionaries, adding Page Number and Section to each requirement.
     """
-    all_requirements = parse_requirements_payload(requirements_json_list)
+    all_requirements = []
+    for item in chunk_results:
+        json_str = item.get("json", "") if isinstance(item, dict) else ""
+        page_number = item.get("page_number", "") if isinstance(item, dict) else ""
+        section = item.get("section", "") if isinstance(item, dict) else ""
+        reqs = parse_requirements_payload([json_str])
+        for req in reqs:
+            req["Page Number"] = page_number
+            req["Section"] = section
+            all_requirements.append(req)
+    return all_requirements
+
+
+def generate_excel_file(chunk_results):
+    """
+    Parses chunk results (each with json, page_number, section), cleans them, and generates
+    an Excel file in memory. Includes Page Number and Section columns.
+    """
+    all_requirements = parse_requirements_payload_from_chunks(chunk_results)
 
     if not all_requirements:
         return None
 
-    # Define the columns based on the JSON schema to ensure order and handle missing keys
+    # Define the columns based on the JSON schema to ensure order and handle missing keys.
+    # Page Number and Section come from chunk metadata (positioned after Name for visibility).
     columns = [
         "Name",
+        "Page Number",
+        "Section",
         "Description",
         "VerificationMethod",
         "Tags",

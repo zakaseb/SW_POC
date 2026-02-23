@@ -16,7 +16,7 @@ from .database import (
     get_latest_requirement_job as db_get_latest_requirement_job,
     list_requirement_jobs as db_list_requirement_jobs,
 )
-from .generation import generate_requirements_json, generate_excel_file, parse_requirements_payload
+from .generation import generate_requirements_json, generate_excel_file, parse_requirements_payload_from_chunks
 from .logger_config import get_logger
 
 logger = get_logger(__name__)
@@ -105,7 +105,7 @@ class RequirementJobManager:
             bm25 = BM25Okapi(tokenized_paragraphs) if tokenized_paragraphs else None
 
             verif_chars = len(verification_context_all)
-            requirements_payload = []
+            chunk_results = []
             for chunk in requirements_chunks:
                 chunk_text = getattr(chunk, "page_content", "") or ""
                 general_context_selected = ""
@@ -140,10 +140,17 @@ class RequirementJobManager:
                     verification_methods_context=verification_context_all,
                     general_context=general_context_selected,
                 )
-                requirements_payload.append(json_response)
+                chunk_meta = getattr(chunk, "metadata", None) or {}
+                page_number = chunk_meta.get("page_number")
+                section = chunk_meta.get("section", "")
+                chunk_results.append({
+                    "json": json_response,
+                    "page_number": page_number if page_number is not None else "",
+                    "section": section or "",
+                })
 
-            excel_bytes = generate_excel_file(requirements_payload)
-            parsed_requirements = parse_requirements_payload(requirements_payload)
+            excel_bytes = generate_excel_file(chunk_results)
+            parsed_requirements = parse_requirements_payload_from_chunks(chunk_results)
             if not excel_bytes or not parsed_requirements:
                 raise ValueError("Requirement generation produced no usable data.")
 
