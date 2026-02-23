@@ -107,13 +107,46 @@ def _format_section(headings) -> str:
     """
     if not headings:
         return ""
-    section_pattern = re.compile(r"\d+(?:\.\d+)*")
+    section_pattern = re.compile(r"\d+(?:\.\d+)+")
     for heading in reversed(headings):  # Start from most specific (last heading)
         if isinstance(heading, str) and heading.strip():
             match = section_pattern.search(heading)
             if match:
                 return match.group(0)
     return ""
+
+
+def _extract_section_from_text(text: str) -> str:
+    """
+    Scan text for a numbered section heading pattern (e.g. '3.1.2 Title') at line starts.
+    Returns the first such section number found, or empty string.
+    This is the primary extraction method for PDFs and a fallback for DOCX.
+    """
+    # Matches patterns like "3.1", "3.1.2", "3.1.2.4" at the start of a line,
+    # followed by whitespace — the standard format for numbered requirements sections.
+    pattern = re.compile(r"^\s*(\d+(?:\.\d+)+)\s", re.MULTILINE)
+    matches = pattern.findall(text)
+    return matches[0] if matches else ""
+
+
+def _extract_page_from_chunk(chunk) -> int | None:
+    """
+    Extract the first page number from Docling chunk provenance metadata (1-based).
+    Used for non-PDF sources converted via DocumentConverter, where Docling tracks
+    page provenance for each text item in the converted document.
+    Returns None if provenance is unavailable.
+    """
+    try:
+        doc_items = getattr(chunk.meta, "doc_items", None) or []
+        for item in doc_items:
+            prov_list = getattr(item, "prov", None) or []
+            for prov in prov_list:
+                page_no = getattr(prov, "page_no", None)
+                if isinstance(page_no, int) and page_no > 0:
+                    return page_no
+    except Exception:
+        pass
+    return None
 
 
 def _build_docling_document_from_text(text_blocks: list[str], document_name: str) -> DoclingDocument:
@@ -321,6 +354,11 @@ def chunk_documents(raw_documents, storage_path=PDF_STORAGE_PATH, classify=False
                 dl_doc = converter.convert(source=full_path).document
                 chunk_batches.append((dl_doc, None, doc_metadata))
 
+            # Track the most recently seen section heading across all chunks/pages of
+            # this document, so that requirements which follow a heading (but don't
+            # repeat it) still receive the correct section label.
+            current_section = ""
+
             for dl_doc, page_num, batch_metadata in chunk_batches:
                 chunks = list(chunker.chunk(dl_doc))
                 logger.info(f"Number of chunks before deduplication: {len(chunks)}")
@@ -331,11 +369,32 @@ def chunk_documents(raw_documents, storage_path=PDF_STORAGE_PATH, classify=False
                         continue
 
                     processed_chunk_texts.add(chunk_text)
+
+                    # --- Page number resolution ---
+                    # PDFs: page_num is pre-set per batch from PDFPlumberLoader metadata.
+                    # DOCX/other: try Docling provenance; page_num is None from chunk_batches.
+                    effective_page_num = page_num
+                    if effective_page_num is None:
+                        effective_page_num = _extract_page_from_chunk(c)
+
+                    # --- Section resolution (three-layer fallback) ---
+                    # 1. Docling heading metadata (reliable for DOCX with proper heading styles)
                     section = _format_section(getattr(c.meta, "headings", None) or [])
+                    # 2. Pattern-match numbered headings in the chunk text itself
+                    #    (reliable for PDFs where heading structure is stripped)
+                    if not section:
+                        section = _extract_section_from_text(chunk_text)
+                    # 3. Carry forward the last known section within this document
+                    #    (handles requirements that follow a heading without repeating it)
+                    if section:
+                        current_section = section
+                    else:
+                        section = current_section
+
                     chunk_meta = {
                         **batch_metadata,
                         "headings": getattr(c.meta, "headings", None) or [],
-                        "page_number": page_num,
+                        "page_number": effective_page_num,
                         "section": section,
                     }
 
