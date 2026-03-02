@@ -2,8 +2,9 @@
 """
 Performance Metrics Comparison: AI-Generated vs Human-Made Requirement Excel Outputs
 
-Compares an AI-generated requirements Excel sheet against a human-created reference
-(gold standard) and produces an Excel report with performance metrics.
+Compares the BULK of AI-generated requirements against the BULK of human-created
+reference (gold standard). No row-wise matching by ID—metrics compare the two
+datasets as wholes.
 
 Usage:
     1. Set GENERATED_EXCEL_PATH and HUMAN_EXCEL_PATH below (or pass as arguments)
@@ -12,8 +13,8 @@ Usage:
 
 Output:
     An Excel file (compare_requirements_metrics_<timestamp>.xlsx) containing:
-    - Summary: Overall performance metrics
-    - Per-Requirement: Field-by-field comparison for matched requirements
+    - Summary: Bulk performance metrics
+    - Distributions: VerificationMethod, RequirementType, Tags comparison
     - Metrics_Explanation: Description of each metric and what it measures
 """
 
@@ -36,33 +37,12 @@ GENERATED_EXCEL_PATH = "path/to/generated_requirements.xlsx"
 HUMAN_EXCEL_PATH = "path/to/human_requirements.xlsx"
 
 # Path for the output metrics Excel (optional; default: timestamped in current dir)
-OUTPUT_EXCEL_PATH = None  # e.g., "document_store/performance_metrics.xlsx"
+OUTPUT_EXCEL_PATH = None
 
 # =============================================================================
 
-EXPECTED_COLUMNS = [
-    "Name",
-    "Page Number",
-    "Section",
-    "Description",
-    "VerificationMethod",
-    "Tags",
-    "RequirementType",
-    "DocumentRequirementID",
-]
 
-
-def _normalize_id(val) -> str:
-    """Normalize requirement ID for matching (strip whitespace, lowercase)."""
-    if pd.isna(val):
-        return ""
-    s = str(val).strip()
-    if s.lower() in ("nan", "none", ""):
-        return ""
-    return s
-
-
-def _normalize_for_compare(val) -> str:
+def _normalize_for_compare(val):
     """Normalize field value for comparison."""
     if pd.isna(val):
         return ""
@@ -80,26 +60,19 @@ def _text_similarity(a: str, b: str) -> float:
     return difflib.SequenceMatcher(None, a, b).ratio()
 
 
-def _tags_jaccard(tags_a: str, tags_b: str) -> float:
-    """Jaccard similarity of tag sets (comma- or space-separated)."""
-    def to_set(s):
-        if pd.isna(s) or not str(s).strip():
-            return set()
-        parts = re.split(r"[,;\s]+", str(s).strip())
-        return {p.strip().lower() for p in parts if p.strip()}
-
-    sa, sb = to_set(tags_a), to_set(tags_b)
-    if not sa and not sb:
-        return 1.0
-    if not sa or not sb:
-        return 0.0
-    return len(sa & sb) / len(sa | sb)
+def _word_set(text: str) -> set:
+    """Extract unique words (lowercased) from text."""
+    if not text or not str(text).strip():
+        return set()
+    return set(re.findall(r"[a-zA-Z0-9]+", str(text).lower()))
 
 
-def _exact_match(a: str, b: str) -> bool:
-    """Check if two normalized values match exactly."""
-    na, nb = _normalize_for_compare(a), _normalize_for_compare(b)
-    return na == nb
+def _tags_to_set(tags_val) -> set:
+    """Parse tags field into set of lowercase tag strings."""
+    if pd.isna(tags_val) or not str(tags_val).strip():
+        return set()
+    parts = re.split(r"[,;\s]+", str(tags_val).strip())
+    return {p.strip().lower() for p in parts if p.strip()}
 
 
 def load_requirements(path: str) -> pd.DataFrame:
@@ -108,9 +81,7 @@ def load_requirements(path: str) -> pd.DataFrame:
     if not p.exists():
         raise FileNotFoundError(f"File not found: {path}")
     df = pd.read_excel(path, engine="openpyxl", sheet_name=0)
-    # Normalize column names (strip, handle variations)
     df.columns = [str(c).strip() for c in df.columns]
-    # Map common alternates
     col_map = {
         "page number": "Page Number",
         "page_number": "Page Number",
@@ -127,194 +98,154 @@ def load_requirements(path: str) -> pd.DataFrame:
     return df
 
 
-def compute_metrics(df_gen: pd.DataFrame, df_human: pd.DataFrame) -> dict:
+def _field_completeness(df: pd.DataFrame, field: str) -> float:
+    """Fraction of rows with non-empty value for field."""
+    if field not in df.columns:
+        return 0.0
+    n = len(df)
+    if n == 0:
+        return 0.0
+    non_empty = sum(1 for v in df[field] if _normalize_for_compare(v))
+    return non_empty / n
+
+
+def _soft_recall_precision(gen_descs: list, human_descs: list) -> tuple:
     """
-    Compute performance metrics by matching requirements on DocumentRequirementID.
+    For each human desc, max similarity to any generated desc -> mean = soft recall.
+    For each generated desc, max similarity to any human desc -> mean = soft precision.
     """
-    id_col = "DocumentRequirementID"
-    if id_col not in df_gen.columns or id_col not in df_human.columns:
-        raise ValueError(
-            "Both sheets must have a 'DocumentRequirementID' column for matching. "
-            f"Generated: {list(df_gen.columns)}; Human: {list(df_human.columns)}"
-        )
+    if not human_descs:
+        return 0.0, 0.0
+    if not gen_descs:
+        return 0.0, 0.0
+    human_norm = [_normalize_for_compare(d) for d in human_descs]
+    gen_norm = [_normalize_for_compare(d) for d in gen_descs]
+    recall_scores = []
+    for h in human_norm:
+        best = max((_text_similarity(h, g) for g in gen_norm), default=0.0)
+        recall_scores.append(best)
+    precision_scores = []
+    for g in gen_norm:
+        best = max((_text_similarity(g, h) for h in human_norm), default=0.0)
+        precision_scores.append(best)
+    soft_recall = sum(recall_scores) / len(recall_scores)
+    soft_precision = sum(precision_scores) / len(precision_scores)
+    return soft_recall, soft_precision
 
-    # Build lookup by ID
-    human_by_id = {}
-    for _, row in df_human.iterrows():
-        rid = _normalize_id(row.get(id_col, ""))
-        if rid:
-            human_by_id[rid] = row
 
-    gen_by_id = {}
-    for _, row in df_gen.iterrows():
-        rid = _normalize_id(row.get(id_col, ""))
-        if rid:
-            gen_by_id[rid] = row
+def _distribution_overlap(gen_series, human_series) -> float:
+    """Jaccard overlap of value distributions (normalized counts)."""
+    g_vals = gen_series.dropna().astype(str).str.strip()
+    h_vals = human_series.dropna().astype(str).str.strip()
+    g_vals = g_vals[g_vals != ""]
+    h_vals = h_vals[h_vals != ""]
+    if g_vals.empty and h_vals.empty:
+        return 1.0
+    g_set = set(g_vals.str.lower())
+    h_set = set(h_vals.str.lower())
+    if not g_set and not h_set:
+        return 1.0
+    if not g_set or not h_set:
+        return 0.0
+    return len(g_set & h_set) / len(g_set | h_set)
 
-    # Match on ID
-    common_ids = set(gen_by_id.keys()) & set(human_by_id.keys())
-    only_gen = set(gen_by_id.keys()) - set(human_by_id.keys())
-    only_human = set(human_by_id.keys()) - set(gen_by_id.keys())
 
-    total_gen = len(gen_by_id) if gen_by_id else 0
-    total_human = len(human_by_id) if human_by_id else 0
-    matched = len(common_ids)
+def compute_bulk_metrics(df_gen: pd.DataFrame, df_human: pd.DataFrame) -> dict:
+    """Compute bulk-level performance metrics (no row matching)."""
+    n_gen = len(df_gen)
+    n_human = len(df_human)
+    count_ratio = n_gen / n_human if n_human else 0.0
+    count_diff = n_gen - n_human
 
-    # Precision: of what we generated, how many are in the reference?
-    precision = matched / total_gen if total_gen else 0.0
-    # Recall: of what the human extracted, how many did we get?
-    recall = matched / total_human if total_human else 0.0
-    # F1
-    f1 = 2 * precision * recall / (precision + recall) if (precision + recall) > 0 else 0.0
+    # Field completeness (% non-empty) for each corpus
+    fields = ["Name", "Page Number", "Section", "Description", "VerificationMethod", "Tags", "RequirementType"]
+    completeness_gen = {f: _field_completeness(df_gen, f) for f in fields}
+    completeness_human = {f: _field_completeness(df_human, f) for f in fields}
 
-    # Field-level accuracy for matched pairs
-    field_acc = {
-        "Name": [],
-        "Description": [],
-        "VerificationMethod": [],
-        "Tags": [],
-        "RequirementType": [],
-        "Page Number": [],
-        "Section": [],
-    }
+    # Average description length
+    desc_col = "Description"
+    avg_len_gen = df_gen[desc_col].apply(lambda x: len(_normalize_for_compare(x))).mean() if desc_col in df_gen.columns and n_gen else 0
+    avg_len_human = df_human[desc_col].apply(lambda x: len(_normalize_for_compare(x))).mean() if desc_col in df_human.columns and n_human else 0
 
-    details_rows = []
+    # Soft recall/precision (description similarity without ID matching)
+    gen_descs = df_gen[desc_col].tolist() if desc_col in df_gen.columns else []
+    human_descs = df_human[desc_col].tolist() if desc_col in df_human.columns else []
+    soft_recall, soft_precision = _soft_recall_precision(gen_descs, human_descs)
+    soft_f1 = 2 * soft_precision * soft_recall / (soft_precision + soft_recall) if (soft_precision + soft_recall) > 0 else 0.0
 
-    for rid in sorted(common_ids):
-        r_gen = gen_by_id[rid]
-        r_human = human_by_id[rid]
+    # Lexical overlap: Jaccard of unique words across all descriptions
+    all_words_gen = set()
+    for d in gen_descs:
+        all_words_gen |= _word_set(d)
+    all_words_human = set()
+    for d in human_descs:
+        all_words_human |= _word_set(d)
+    if all_words_gen or all_words_human:
+        lexical_jaccard = len(all_words_gen & all_words_human) / len(all_words_gen | all_words_human)
+    else:
+        lexical_jaccard = 1.0
 
-        # Name: text similarity
-        name_sim = _text_similarity(
-            _normalize_for_compare(r_gen.get("Name", "")),
-            _normalize_for_compare(r_human.get("Name", "")),
-        )
-        field_acc["Name"].append(name_sim)
+    # Distribution overlap for VerificationMethod, RequirementType
+    verif_overlap = 0.0
+    type_overlap = 0.0
+    if "VerificationMethod" in df_gen.columns and "VerificationMethod" in df_human.columns:
+        verif_overlap = _distribution_overlap(df_gen["VerificationMethod"], df_human["VerificationMethod"])
+    if "RequirementType" in df_gen.columns and "RequirementType" in df_human.columns:
+        type_overlap = _distribution_overlap(df_gen["RequirementType"], df_human["RequirementType"])
 
-        # Description: text similarity
-        desc_sim = _text_similarity(
-            _normalize_for_compare(r_gen.get("Description", "")),
-            _normalize_for_compare(r_human.get("Description", "")),
-        )
-        field_acc["Description"].append(desc_sim)
-
-        # VerificationMethod, RequirementType: exact match
-        verif_match = _exact_match(
-            r_gen.get("VerificationMethod", ""),
-            r_human.get("VerificationMethod", ""),
-        )
-        type_match = _exact_match(
-            r_gen.get("RequirementType", ""),
-            r_human.get("RequirementType", ""),
-        )
-        field_acc["VerificationMethod"].append(1.0 if verif_match else 0.0)
-        field_acc["RequirementType"].append(1.0 if type_match else 0.0)
-
-        # Tags: Jaccard
-        tags_sim = _tags_jaccard(
-            r_gen.get("Tags", ""),
-            r_human.get("Tags", ""),
-        )
-        field_acc["Tags"].append(tags_sim)
-
-        # Page Number, Section: exact match (normalized)
-        pg_match = _exact_match(r_gen.get("Page Number", ""), r_human.get("Page Number", ""))
-        sec_match = _exact_match(r_gen.get("Section", ""), r_human.get("Section", ""))
-        field_acc["Page Number"].append(1.0 if pg_match else 0.0)
-        field_acc["Section"].append(1.0 if sec_match else 0.0)
-
-        details_rows.append({
-            "DocumentRequirementID": rid,
-            "Name_Similarity": round(name_sim, 4),
-            "Description_Similarity": round(desc_sim, 4),
-            "VerificationMethod_Match": verif_match,
-            "RequirementType_Match": type_match,
-            "Tags_Jaccard": round(tags_sim, 4),
-            "Page_Number_Match": pg_match,
-            "Section_Match": sec_match,
-        })
-
-    # Mean field accuracy
-    mean_field = {k: sum(v) / len(v) if v else 0.0 for k, v in field_acc.items()}
+    # Tags: aggregate all tags, Jaccard of tag vocabularies
+    tags_gen = set()
+    if "Tags" in df_gen.columns:
+        for t in df_gen["Tags"]:
+            tags_gen |= _tags_to_set(t)
+    tags_human = set()
+    if "Tags" in df_human.columns:
+        for t in df_human["Tags"]:
+            tags_human |= _tags_to_set(t)
+    tags_jaccard = len(tags_gen & tags_human) / len(tags_gen | tags_human) if (tags_gen or tags_human) else 1.0
 
     return {
-        "total_generated": total_gen,
-        "total_human": total_human,
-        "matched": matched,
-        "only_in_generated": len(only_gen),
-        "only_in_human": len(only_human),
-        "precision": precision,
-        "recall": recall,
-        "f1": f1,
-        "mean_field_accuracy": mean_field,
-        "details_rows": details_rows,
-        "only_gen_ids": sorted(only_gen),
-        "only_human_ids": sorted(only_human),
+        "n_generated": n_gen,
+        "n_human": n_human,
+        "count_ratio": count_ratio,
+        "count_diff": count_diff,
+        "completeness_gen": completeness_gen,
+        "completeness_human": completeness_human,
+        "avg_desc_len_gen": avg_len_gen,
+        "avg_desc_len_human": avg_len_human,
+        "soft_recall": soft_recall,
+        "soft_precision": soft_precision,
+        "soft_f1": soft_f1,
+        "lexical_jaccard": lexical_jaccard,
+        "verification_method_overlap": verif_overlap,
+        "requirement_type_overlap": type_overlap,
+        "tags_vocab_jaccard": tags_jaccard,
     }
 
 
 def create_metrics_explanation_df() -> pd.DataFrame:
-    """Create a sheet explaining each metric."""
+    """Create a sheet explaining each bulk metric."""
     rows = [
-        {
-            "Metric": "Precision",
-            "Description": "Of all requirements the AI extracted, what fraction exists in the human reference?",
-            "Interpretation": "High precision = fewer false positives (AI did not invent requirements).",
-        },
-        {
-            "Metric": "Recall",
-            "Description": "Of all requirements in the human reference, what fraction did the AI extract?",
-            "Interpretation": "High recall = fewer missed requirements.",
-        },
-        {
-            "Metric": "F1 Score",
-            "Description": "Harmonic mean of Precision and Recall.",
-            "Interpretation": "Balanced measure of extraction quality; penalizes extreme imbalance.",
-        },
-        {
-            "Metric": "Name_Similarity",
-            "Description": "Text similarity (0-1) between AI and human requirement names.",
-            "Interpretation": "Measures how closely AI names match human labels.",
-        },
-        {
-            "Metric": "Description_Similarity",
-            "Description": "Text similarity (0-1) between AI and human requirement descriptions.",
-            "Interpretation": "Core measure of whether the AI captured the requirement text correctly.",
-        },
-        {
-            "Metric": "VerificationMethod_Match",
-            "Description": "Exact match (yes/no) for VerificationMethod (Test, Inspection, Analysis).",
-            "Interpretation": "Accuracy of verification method classification.",
-        },
-        {
-            "Metric": "RequirementType_Match",
-            "Description": "Exact match (yes/no) for RequirementType (Functional, Interface, Constraint).",
-            "Interpretation": "Accuracy of requirement type classification.",
-        },
-        {
-            "Metric": "Tags_Jaccard",
-            "Description": "Jaccard similarity (0-1) of tag sets between AI and human.",
-            "Interpretation": "How well tags like TBD, Updated are identified.",
-        },
-        {
-            "Metric": "Page_Number_Match",
-            "Description": "Exact match (yes/no) for page number.",
-            "Interpretation": "Traceability: did the AI correctly assign the source page?",
-        },
-        {
-            "Metric": "Section_Match",
-            "Description": "Exact match (yes/no) for section number (e.g., 3.1.2).",
-            "Interpretation": "Traceability: did the AI correctly assign the source section?",
-        },
+        {"Metric": "Count Ratio", "Description": "Generated count / Human count.", "Interpretation": "~1.0 = similar extraction volume; >1 = AI extracted more; <1 = AI extracted fewer."},
+        {"Metric": "Count Difference", "Description": "Generated count - Human count.", "Interpretation": "Positive = AI extracted more requirements; negative = AI missed some."},
+        {"Metric": "Soft Recall", "Description": "For each human requirement, max similarity to any generated. Mean across human.", "Interpretation": "Do human requirements have a similar counterpart in AI output? High = few misses."},
+        {"Metric": "Soft Precision", "Description": "For each generated requirement, max similarity to any human. Mean across generated.", "Interpretation": "Do generated requirements resemble human ones? High = fewer spurious extractions."},
+        {"Metric": "Soft F1", "Description": "Harmonic mean of Soft Recall and Soft Precision.", "Interpretation": "Balanced bulk extraction quality."},
+        {"Metric": "Lexical Jaccard", "Description": "Jaccard similarity of unique words across all descriptions (generated vs human).", "Interpretation": "Vocabulary overlap; high = similar terminology used."},
+        {"Metric": "VerificationMethod Overlap", "Description": "Jaccard of distinct VerificationMethod values (Test, Inspection, etc.) in each corpus.", "Interpretation": "Do both use similar verification categories?"},
+        {"Metric": "RequirementType Overlap", "Description": "Jaccard of distinct RequirementType values (Functional, Interface, etc.).", "Interpretation": "Do both classify into similar types?"},
+        {"Metric": "Tags Vocab Jaccard", "Description": "Jaccard of aggregate tag sets (TBD, Updated, etc.) across all rows.", "Interpretation": "Do both identify similar tag types?"},
+        {"Metric": "Field Completeness", "Description": "% of rows with non-empty value per field, computed separately for each corpus.", "Interpretation": "Higher = less missing data; compare generated vs human."},
+        {"Metric": "Avg Description Length", "Description": "Mean character count of Description field per corpus.", "Interpretation": "Similar lengths suggest similar extraction granularity."},
     ]
     return pd.DataFrame(rows)
 
 
 def run_comparison(generated_path: str, human_path: str, output_path: str | None = None) -> str:
-    """Load both files, compute metrics, write output Excel. Returns path to output file."""
+    """Load both files, compute bulk metrics, write output Excel."""
     df_gen = load_requirements(generated_path)
     df_human = load_requirements(human_path)
-    metrics = compute_metrics(df_gen, df_human)
+    m = compute_bulk_metrics(df_gen, df_human)
 
     if output_path is None:
         output_path = f"compare_requirements_metrics_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
@@ -323,41 +254,47 @@ def run_comparison(generated_path: str, human_path: str, output_path: str | None
         # Summary sheet
         summary_data = [
             ["Metric", "Value", "Interpretation"],
-            ["Total requirements (AI-generated)", metrics["total_generated"], "Count of requirements extracted by AI"],
-            ["Total requirements (Human reference)", metrics["total_human"], "Count in human-made reference"],
-            ["Matched (same DocumentRequirementID)", metrics["matched"], "Requirements found in both"],
-            ["Only in AI output", metrics["only_in_generated"], "Potential false positives"],
-            ["Only in Human reference", metrics["only_in_human"], "Potential misses"],
+            ["Total requirements (AI-generated)", m["n_generated"], "Count extracted by AI"],
+            ["Total requirements (Human reference)", m["n_human"], "Count in human reference"],
+            ["Count Ratio (gen/human)", f"{m['count_ratio']:.4f}", "~1 = similar volume"],
+            ["Count Difference (gen - human)", m["count_diff"], ""],
             ["", "", ""],
-            ["Precision", f"{metrics['precision']:.4f}", "matched / total_generated"],
-            ["Recall", f"{metrics['recall']:.4f}", "matched / total_human"],
-            ["F1 Score", f"{metrics['f1']:.4f}", "2 * P * R / (P + R)"],
+            ["Soft Recall", f"{m['soft_recall']:.4f}", "Human reqs with similar AI counterpart"],
+            ["Soft Precision", f"{m['soft_precision']:.4f}", "Generated reqs similar to human"],
+            ["Soft F1", f"{m['soft_f1']:.4f}", "Balanced bulk quality"],
             ["", "", ""],
-            ["Mean Name Similarity", f"{metrics['mean_field_accuracy']['Name']:.4f}", ""],
-            ["Mean Description Similarity", f"{metrics['mean_field_accuracy']['Description']:.4f}", ""],
-            ["Mean VerificationMethod Match Rate", f"{metrics['mean_field_accuracy']['VerificationMethod']:.4f}", ""],
-            ["Mean RequirementType Match Rate", f"{metrics['mean_field_accuracy']['RequirementType']:.4f}", ""],
-            ["Mean Tags Jaccard", f"{metrics['mean_field_accuracy']['Tags']:.4f}", ""],
-            ["Mean Page Number Match Rate", f"{metrics['mean_field_accuracy']['Page Number']:.4f}", ""],
-            ["Mean Section Match Rate", f"{metrics['mean_field_accuracy']['Section']:.4f}", ""],
+            ["Lexical Jaccard (word overlap)", f"{m['lexical_jaccard']:.4f}", "Vocabulary overlap"],
+            ["VerificationMethod Overlap", f"{m['verification_method_overlap']:.4f}", ""],
+            ["RequirementType Overlap", f"{m['requirement_type_overlap']:.4f}", ""],
+            ["Tags Vocab Jaccard", f"{m['tags_vocab_jaccard']:.4f}", ""],
+            ["", "", ""],
+            ["Avg Description Length (generated)", f"{m['avg_desc_len_gen']:.1f}", "chars"],
+            ["Avg Description Length (human)", f"{m['avg_desc_len_human']:.1f}", "chars"],
         ]
         pd.DataFrame(summary_data).to_excel(writer, index=False, header=False, sheet_name="Summary")
 
-        # Per-requirement details
-        if metrics["details_rows"]:
-            pd.DataFrame(metrics["details_rows"]).to_excel(
-                writer, index=False, sheet_name="Per-Requirement"
-            )
-
-        # Unmatched IDs (optional)
-        if metrics["only_gen_ids"] or metrics["only_human_ids"]:
-            unmt = pd.DataFrame({
-                "Only in AI output (DocumentRequirementID)": metrics["only_gen_ids"]
-                + [""] * max(0, len(metrics["only_human_ids"]) - len(metrics["only_gen_ids"])),
-                "Only in Human reference (DocumentRequirementID)": metrics["only_human_ids"]
-                + [""] * max(0, len(metrics["only_gen_ids"]) - len(metrics["only_human_ids"])),
+        # Field completeness comparison
+        comp_rows = []
+        for f in ["Name", "Page Number", "Section", "Description", "VerificationMethod", "Tags", "RequirementType"]:
+            comp_rows.append({
+                "Field": f,
+                "Generated % Non-Empty": f"{m['completeness_gen'].get(f, 0) * 100:.1f}",
+                "Human % Non-Empty": f"{m['completeness_human'].get(f, 0) * 100:.1f}",
             })
-            unmt.to_excel(writer, index=False, sheet_name="Unmatched_IDs")
+        pd.DataFrame(comp_rows).to_excel(writer, index=False, sheet_name="Field_Completeness")
+
+        # Distributions (value counts for each corpus)
+        for col in ["VerificationMethod", "RequirementType"]:
+            if col in df_gen.columns and col in df_human.columns:
+                g_counts = df_gen[col].fillna("").astype(str).str.strip()
+                g_counts = g_counts[g_counts != ""].value_counts()
+                h_counts = df_human[col].fillna("").astype(str).str.strip()
+                h_counts = h_counts[h_counts != ""].value_counts()
+                dist_df = pd.DataFrame({
+                    "Generated_Count": g_counts,
+                    "Human_Count": h_counts,
+                }).fillna(0).astype(int)
+                dist_df.to_excel(writer, sheet_name=f"Dist_{col[:10]}")
 
         # Metrics explanation
         create_metrics_explanation_df().to_excel(writer, index=False, sheet_name="Metrics_Explanation")
@@ -367,34 +304,16 @@ def run_comparison(generated_path: str, human_path: str, output_path: str | None
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Compare AI-generated vs human-made requirement Excel outputs and produce performance metrics.",
+        description="Compare bulk of AI-generated vs human-made requirement Excel outputs.",
     )
-    parser.add_argument(
-        "generated",
-        nargs="?",
-        default=GENERATED_EXCEL_PATH,
-        help="Path to AI-generated requirements Excel",
-    )
-    parser.add_argument(
-        "human",
-        nargs="?",
-        default=HUMAN_EXCEL_PATH,
-        help="Path to human-made (reference) requirements Excel",
-    )
-    parser.add_argument(
-        "-o", "--output",
-        default=OUTPUT_EXCEL_PATH,
-        help="Output Excel path (default: timestamped in current dir)",
-    )
+    parser.add_argument("generated", nargs="?", default=GENERATED_EXCEL_PATH, help="Path to AI-generated Excel")
+    parser.add_argument("human", nargs="?", default=HUMAN_EXCEL_PATH, help="Path to human-made Excel")
+    parser.add_argument("-o", "--output", default=OUTPUT_EXCEL_PATH, help="Output Excel path")
     args = parser.parse_args()
 
-    if args.generated == GENERATED_EXCEL_PATH and "path/to" in str(args.generated):
-        print("ERROR: Please set GENERATED_EXCEL_PATH and HUMAN_EXCEL_PATH at the top of this script,")
-        print("       or pass them as arguments:")
+    if "path/to" in str(args.generated) or "path/to" in str(args.human):
+        print("ERROR: Set GENERATED_EXCEL_PATH and HUMAN_EXCEL_PATH, or pass as arguments:")
         print("       python compare_requirements_performance.py <generated.xlsx> <human.xlsx>")
-        sys.exit(1)
-    if args.human == HUMAN_EXCEL_PATH and "path/to" in str(args.human):
-        print("ERROR: Please set HUMAN_EXCEL_PATH or pass it as second argument.")
         sys.exit(1)
 
     try:
