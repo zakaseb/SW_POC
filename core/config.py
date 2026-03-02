@@ -44,6 +44,8 @@ Your response MUST be only the JSON data (a single object or a list of objects) 
 JSON Schema:
 {{
   "Name": "string",
+  "Page Number": "string (e.g., 5)",
+  "Section": "string (e.g., 3.1.2)",
   "Description": "string",
   "VerificationMethod": "string (e.g., Analysis, Inspection, Demonstration, Test)",
   "Tags": "list of strings",
@@ -53,6 +55,8 @@ JSON Schema:
 whereby:
 
 Name: The name of the requirement
+Page Number: Use the value from "Chunk provenance" below if provided. Otherwise extract ONLY from the Requirement Chunk (not from reference materials). Output only the number (e.g., "5"). If not found, use "".
+Section: Use the value from "Chunk provenance" below if provided. Otherwise extract ONLY from the Requirement Chunk (not from reference materials). Output only the number (e.g., "3.1.2"). If not found, use "".
 Description: The requirement description
 Verification Method: This should be 'Test', 'Inspection' or 'Analysis'. The verification 
    method of each requirement can be identified in table 4-4, where the requirement ID can 
@@ -78,6 +82,8 @@ multiple requirements if so required.
 Here is an example of a desired JSON object:
 {{
   "Name": "Dual-Mode HMI",
+  "Page Number": "12",
+  "Section": "3.1.2",
   "Description": "The system shall support dual-mode hmi as per mission profile and design objectives.",
   "VerificationMethod": "Analysis",
   "Tags": ["TBD"],
@@ -85,12 +91,17 @@ Here is an example of a desired JSON object:
   "DocumentRequirementID": "#177"
 }}
 
-Now, analyze the following text chunk and extract the requirements.
+Now, analyze the following and extract the requirements.
 
-Text Chunk:
+IMPORTANT: The "Requirement Chunk" below is the SOURCE from the input document. Extract requirements, Page Number, and Section ONLY from it. The "Additional reference materials" are from other parts of the document—use them to understand/validate requirements but NOT for Page Number or Section.
+
+Chunk provenance (from input document; use these exact values for Page Number and Section):
+{chunk_provenance}
+
+Requirement Chunk (source for extraction):
 {document_context}
 
-Additional reference materials you MUST use while generating/validating requirements:
+Additional reference materials (for understanding/validation only; do NOT use for Page Number or Section):
 
 - Verification Methods (fixed offline reference; use this first to determine 'VerificationMethod'):
 {verification_methods_context}

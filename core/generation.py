@@ -65,9 +65,19 @@ def generate_answer(
         return f"{user_message} Please try again later or rephrase your question. (Details: {e})"
 
 
-def generate_requirements_json(language_model, requirement_chunk, verification_methods_context: str = "", general_context: str = ""):
+def generate_requirements_json(
+    language_model,
+    requirement_chunk,
+    verification_methods_context: str = "",
+    general_context: str = "",
+    page_number=None,
+    section: str = "",
+):
     """
     Generates a JSON object for a single requirement chunk.
+    page_number and section come from document processing (chunk metadata) and represent
+    where this chunk appeared in the input document; they are passed so the LLM uses
+    them instead of extracting from mixed context (which would be inaccurate).
     """
     logger.info("Generating requirements JSON...")
     try:
@@ -76,6 +86,16 @@ def generate_requirements_json(language_model, requirement_chunk, verification_m
             logger.warning("generate_requirements_json called with empty chunk text.")
             return "{}"
 
+        if page_number is not None and page_number != "":
+            pg = str(page_number)
+            chunk_provenance = f"Page Number: {pg}"
+        else:
+            chunk_provenance = "Page Number: (extract from Requirement Chunk only)"
+        if section:
+            chunk_provenance += f"\nSection: {section}"
+        else:
+            chunk_provenance += "\nSection: (extract from Requirement Chunk only)"
+
         prompt = ChatPromptTemplate.from_template(REQUIREMENT_JSON_PROMPT_TEMPLATE)
         response_chain = prompt | language_model
 
@@ -83,6 +103,7 @@ def generate_requirements_json(language_model, requirement_chunk, verification_m
             "document_context": context_text,
             "verification_methods_context": verification_methods_context,
             "general_context": general_context,
+            "chunk_provenance": chunk_provenance,
         })
 
         if not response or not response.strip():
@@ -197,30 +218,13 @@ def parse_requirements_payload(requirements_json_list):
     return all_requirements
 
 
-def parse_requirements_payload_from_chunks(chunk_results):
+def generate_excel_file(requirements_json_list):
     """
-    Parses chunk results (each with json, page_number, section) into a list of requirement
-    dictionaries, adding Page Number and Section to each requirement.
+    Parses a list of JSON strings (from LLM extraction), cleans them, and generates
+    an Excel file in memory. Page Number and Section are extracted by the LLM and
+    included in each requirement's JSON; they appear as columns in the output.
     """
-    all_requirements = []
-    for item in chunk_results:
-        json_str = item.get("json", "") if isinstance(item, dict) else ""
-        page_number = item.get("page_number", "") if isinstance(item, dict) else ""
-        section = item.get("section", "") if isinstance(item, dict) else ""
-        reqs = parse_requirements_payload([json_str])
-        for req in reqs:
-            req["Page Number"] = page_number
-            req["Section"] = section
-            all_requirements.append(req)
-    return all_requirements
-
-
-def generate_excel_file(chunk_results):
-    """
-    Parses chunk results (each with json, page_number, section), cleans them, and generates
-    an Excel file in memory. Includes Page Number and Section columns.
-    """
-    all_requirements = parse_requirements_payload_from_chunks(chunk_results)
+    all_requirements = parse_requirements_payload(requirements_json_list)
 
     if not all_requirements:
         return None
@@ -238,6 +242,13 @@ def generate_excel_file(chunk_results):
         "DocumentRequirementID"
     ]
 
+    # Normalize Page Number and Section keys (LLM may use variations)
+    for req in all_requirements:
+        if "Page Number" not in req:
+            req["Page Number"] = req.get("page_number") or req.get("PageNumber") or ""
+        if "Section" not in req:
+            req["Section"] = req.get("section") or ""
+
     # Create a DataFrame
     df = pd.DataFrame(all_requirements)
 
@@ -245,6 +256,8 @@ def generate_excel_file(chunk_results):
     for col in columns:
         if col not in df.columns:
             df[col] = ''
+        elif col in ("Page Number", "Section"):
+            df[col] = df[col].apply(lambda x: str(x).strip() if x is not None and str(x) not in ("nan", "None") else "")
 
     # Reorder columns to match the desired schema and select only them
     df = df[columns]

@@ -100,6 +100,9 @@ def _split_text_blocks(text: str) -> list[str]:
     return [block.strip() for block in re.split(r"\n\s*\n", text) if block.strip()]
 
 
+SECTION_NUMBER_PATTERN = re.compile(r"\d+(?:\.\d+)*")
+
+
 def _format_section(headings) -> str:
     """
     Extract the most specific section number (e.g. 3.1.2) from Docling chunk headings.
@@ -107,45 +110,49 @@ def _format_section(headings) -> str:
     """
     if not headings:
         return ""
-    section_pattern = re.compile(r"\d+(?:\.\d+)+")
     for heading in reversed(headings):  # Start from most specific (last heading)
         if isinstance(heading, str) and heading.strip():
-            match = section_pattern.search(heading)
+            match = SECTION_NUMBER_PATTERN.search(heading)
             if match:
                 return match.group(0)
     return ""
 
 
-def _extract_section_from_text(text: str) -> str:
+def _extract_section_from_text(chunk_text: str) -> str:
     """
-    Scan text for a numbered section heading pattern (e.g. '3.1.2 Title') at line starts.
-    Returns the first such section number found, or empty string.
-    This is the primary extraction method for PDFs and a fallback for DOCX.
+    Fallback: extract section number from chunk text when Docling headings are empty.
+    Looks for patterns like "3.1.2", "Section 3.1.2", "REQ-3.1.2" at line starts or in text.
     """
-    # Matches patterns like "3.1", "3.1.2", "3.1.2.4" at the start of a line,
-    # followed by whitespace — the standard format for numbered requirements sections.
-    pattern = re.compile(r"^\s*(\d+(?:\.\d+)+)\s", re.MULTILINE)
-    matches = pattern.findall(text)
-    return matches[0] if matches else ""
+    if not chunk_text or not chunk_text.strip():
+        return ""
+    # Prefer line starts (common in requirement docs: "3.1.2 The system shall...")
+    for line in chunk_text.split("\n"):
+        line = line.strip()
+        if not line:
+            continue
+        match = SECTION_NUMBER_PATTERN.search(line)
+        if match:
+            return match.group(0)
+    # Fallback: any section number in text
+    match = SECTION_NUMBER_PATTERN.search(chunk_text)
+    return match.group(0) if match else ""
 
 
-def _extract_page_from_chunk(chunk) -> int | None:
+def _extract_page_from_chunk_meta(chunk_meta) -> int | None:
     """
-    Extract the first page number from Docling chunk provenance metadata (1-based).
-    Used for non-PDF sources converted via DocumentConverter, where Docling tracks
-    page provenance for each text item in the converted document.
-    Returns None if provenance is unavailable.
+    Extract 1-based page number from Docling chunk meta (when using DocumentConverter).
+    Docling may use page_no, page, or provenance.
     """
-    try:
-        doc_items = getattr(chunk.meta, "doc_items", None) or []
-        for item in doc_items:
-            prov_list = getattr(item, "prov", None) or []
-            for prov in prov_list:
-                page_no = getattr(prov, "page_no", None)
-                if isinstance(page_no, int) and page_no > 0:
-                    return page_no
-    except Exception:
-        pass
+    if chunk_meta is None:
+        return None
+    page_raw = (
+        getattr(chunk_meta, "page_no", None)
+        or getattr(chunk_meta, "page", None)
+        or (getattr(chunk_meta, "prov", None) and getattr(chunk_meta.prov, "page_no", None))
+    )
+    if page_raw is not None and isinstance(page_raw, (int, float)):
+        p = int(page_raw)
+        return p + 1 if p == 0 else p  # 0-indexed -> 1-based; already 1-based stays
     return None
 
 
@@ -239,7 +246,7 @@ def load_document(file_path):
                     st.warning(f"DOCX file '{file_name}' appears to be empty or contains no text.")
                     return []
                 logger.info(f"Successfully loaded DOCX: {file_name}")
-                return [LangchainDocument(page_content=full_text, metadata={"source": file_name})]
+                return [LangchainDocument(page_content=full_text, metadata={"source": file_path})]
             except DocxPackageNotFoundError as e:
                 user_message = f"Failed to load DOCX '{file_name}': The file appears to be corrupted or not a valid DOCX file."
                 logger.error(f"{user_message} Error: {e}")
@@ -260,7 +267,7 @@ def load_document(file_path):
                     st.warning(f"Text file '{file_name}' appears to be empty.")
                     return []
                 logger.info(f"Successfully loaded TXT: {file_name}")
-                return [LangchainDocument(page_content=full_text, metadata={"source": file_name})]
+                return [LangchainDocument(page_content=full_text, metadata={"source": file_path})]
             except UnicodeDecodeError as unicode_err:
                 user_message = f"Failed to load TXT file '{file_name}': The file is not UTF-8 encoded."
                 logger.error(f"{user_message} Details: {unicode_err}")
@@ -326,40 +333,45 @@ def chunk_documents(raw_documents, storage_path=PDF_STORAGE_PATH, classify=False
             normalized_source = _normalize_source_path(source_path)
             is_pdf_source = _is_pdf_source(source_path, source_docs, normalized_source)
 
-            chunk_batches: list[tuple[DoclingDocument, int | None, dict]] = []
-            if is_pdf_source:
-                # Sort by page to maintain order; process page-by-page to preserve page numbers
-                sorted_docs = sorted(
-                    [d for d in source_docs if d.page_content and d.page_content.strip()],
-                    key=lambda d: d.metadata.get("page", 0),
-                )
-                if not sorted_docs:
-                    logger.warning(f"No extractable text found for PDF '{source_path}'.")
-                    continue
-                doc_name = Path(normalized_source or source_path).stem or "document"
-                for page_doc in sorted_docs:
-                    page_raw = page_doc.metadata.get("page", 0)
-                    page_num = (page_raw + 1) if isinstance(page_raw, int) else None
-                    dl_doc = _build_docling_document_from_text([page_doc.page_content], doc_name)
-                    chunk_batches.append((dl_doc, page_num, doc_metadata))
-            else:
-                full_path = normalized_source or source_path
+            chunk_batches: list[tuple[DoclingDocument, int | None, dict, bool]] = []
+            full_path = normalized_source or source_path
+            if not os.path.exists(full_path):
+                full_path = os.path.join(storage_path, os.path.basename(source_path))
                 if not os.path.exists(full_path):
                     logger.warning(
-                        f"Source path '{full_path}' not found. Attempting to resolve with storage path '{storage_path}'."
+                        f"Source path '{full_path}' not found. Skipping source."
                     )
-                    full_path = os.path.join(storage_path, os.path.basename(source_path))
-                    if not os.path.exists(full_path):
-                        raise FileNotFoundError(f"Resolved file path does not exist: {full_path}")
+                    continue
+
+            if is_pdf_source:
+                # Try DocumentConverter first for PDF to get page + section from layout
+                use_converter_for_pdf = False
+                try:
+                    dl_doc = converter.convert(source=full_path).document
+                    use_converter_for_pdf = True
+                    chunk_batches.append((dl_doc, None, doc_metadata, True))
+                except Exception as pdf_conv_err:
+                    logger.info(
+                        f"DocumentConverter failed for PDF '{source_path}', falling back to text extraction: {pdf_conv_err}"
+                    )
+                    sorted_docs = sorted(
+                        [d for d in source_docs if d.page_content and d.page_content.strip()],
+                        key=lambda d: d.metadata.get("page", 0),
+                    )
+                    if not sorted_docs:
+                        logger.warning(f"No extractable text found for PDF '{source_path}'.")
+                        continue
+                    doc_name = Path(normalized_source or source_path).stem or "document"
+                    for page_doc in sorted_docs:
+                        page_raw = page_doc.metadata.get("page", 0)
+                        page_num = (page_raw + 1) if isinstance(page_raw, int) else None
+                        dl_doc = _build_docling_document_from_text([page_doc.page_content], doc_name)
+                        chunk_batches.append((dl_doc, page_num, doc_metadata, False))
+            else:
                 dl_doc = converter.convert(source=full_path).document
-                chunk_batches.append((dl_doc, None, doc_metadata))
+                chunk_batches.append((dl_doc, None, doc_metadata, True))
 
-            # Track the most recently seen section heading across all chunks/pages of
-            # this document, so that requirements which follow a heading (but don't
-            # repeat it) still receive the correct section label.
-            current_section = ""
-
-            for dl_doc, page_num, batch_metadata in chunk_batches:
+            for dl_doc, page_num, batch_metadata, from_converter in chunk_batches:
                 chunks = list(chunker.chunk(dl_doc))
                 logger.info(f"Number of chunks before deduplication: {len(chunks)}")
 
@@ -369,32 +381,17 @@ def chunk_documents(raw_documents, storage_path=PDF_STORAGE_PATH, classify=False
                         continue
 
                     processed_chunk_texts.add(chunk_text)
-
-                    # --- Page number resolution ---
-                    # PDFs: page_num is pre-set per batch from PDFPlumberLoader metadata.
-                    # DOCX/other: try Docling provenance; page_num is None from chunk_batches.
-                    effective_page_num = page_num
-                    if effective_page_num is None:
-                        effective_page_num = _extract_page_from_chunk(c)
-
-                    # --- Section resolution (three-layer fallback) ---
-                    # 1. Docling heading metadata (reliable for DOCX with proper heading styles)
-                    section = _format_section(getattr(c.meta, "headings", None) or [])
-                    # 2. Pattern-match numbered headings in the chunk text itself
-                    #    (reliable for PDFs where heading structure is stripped)
+                    headings = getattr(c.meta, "headings", None) or []
+                    section = _format_section(headings)
                     if not section:
                         section = _extract_section_from_text(chunk_text)
-                    # 3. Carry forward the last known section within this document
-                    #    (handles requirements that follow a heading without repeating it)
-                    if section:
-                        current_section = section
-                    else:
-                        section = current_section
-
+                    if from_converter:
+                        page_from_meta = _extract_page_from_chunk_meta(getattr(c, "meta", None))
+                        page_num = page_num if page_num is not None else page_from_meta
                     chunk_meta = {
                         **batch_metadata,
-                        "headings": getattr(c.meta, "headings", None) or [],
-                        "page_number": effective_page_num,
+                        "headings": headings,
+                        "page_number": page_num,
                         "section": section,
                     }
 
