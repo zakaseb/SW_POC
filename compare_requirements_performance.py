@@ -24,6 +24,7 @@ import re
 import sys
 from pathlib import Path
 from datetime import datetime
+from zipfile import BadZipFile
 
 import pandas as pd
 
@@ -76,11 +77,31 @@ def _tags_to_set(tags_val) -> set:
 
 
 def load_requirements(path: str) -> pd.DataFrame:
-    """Load requirements from an Excel file. Expects first sheet to contain requirements."""
+    """Load requirements from an Excel or CSV file. Expects first sheet to contain requirements."""
     p = Path(path)
     if not p.exists():
         raise FileNotFoundError(f"File not found: {path}")
-    df = pd.read_excel(path, engine="openpyxl", sheet_name=0)
+    suffix = p.suffix.lower()
+    try:
+        if suffix == ".csv":
+            df = pd.read_csv(path, encoding="utf-8", encoding_errors="replace")
+        elif suffix == ".xls":
+            try:
+                df = pd.read_excel(path, engine="xlrd", sheet_name=0)
+            except ImportError:
+                raise ValueError(
+                    "Reading .xls requires xlrd. Install with: pip install xlrd. "
+                    "Or save the file as .xlsx in Excel."
+                )
+        else:
+            df = pd.read_excel(path, engine="openpyxl", sheet_name=0)
+    except BadZipFile as e:
+        raise ValueError(
+            f"'{path}' is not a valid .xlsx file. Common causes:\n"
+            "  - File is .xls (old Excel): save as .xlsx or install xlrd\n"
+            "  - File is CSV: rename to .csv or save as .xlsx from Excel\n"
+            "  - File is corrupted or empty"
+        ) from e
     df.columns = [str(c).strip() for c in df.columns]
     col_map = {
         "page number": "Page Number",
@@ -324,6 +345,12 @@ def main():
         sys.exit(1)
     except ValueError as e:
         print(f"Error: {e}")
+        sys.exit(1)
+    except BadZipFile as e:
+        print(
+            "Error: One of the files is not a valid .xlsx. Ensure both files are saved as "
+            ".xlsx (Excel 2007+). If you have .xls or CSV, save/re-save as .xlsx from Excel."
+        )
         sys.exit(1)
 
 
