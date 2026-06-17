@@ -12,14 +12,20 @@ Usage:
            or: python compare_requirements_performance.py <generated.xlsx> <human.xlsx>
 
 Output:
-    An Excel file (compare_requirements_metrics_<timestamp>.xlsx) containing:
-    - Summary: Bulk performance metrics
-    - Distributions: VerificationMethod, RequirementType, Tags comparison
-    - Metrics_Explanation: Description of each metric and what it measures
-    - Verbatim_Source_Per_Requirement (only when --source / SOURCE_DOCUMENT_PATH is provided):
-      one row per AI-generated requirement, with a "Source Text (Verbatim)" column
-      containing the contiguous span from the original input document that best
-      matches that requirement's Description.
+    1) compare_requirements_metrics_<timestamp>.xlsx
+       - Summary: Bulk performance metrics
+       - Distributions: VerificationMethod, RequirementType, Tags comparison
+       - Metrics_Explanation: Description of each metric and what it measures
+
+    2) <generated-stem>_with_verbatim_<timestamp>.xlsx (only when --source /
+       SOURCE_DOCUMENT_PATH is provided):
+       A copy of the generated requirements table with two extra columns
+       appended to the main output table (no separate sheet):
+         - "Source Text (Verbatim)": the contiguous span from the original
+           input document that best matches the requirement's Description.
+         - "Source Match Score": similarity in [0, 1] between that verbatim
+           span and the Description (1.0 = exact match). Some rows may have
+           no acceptable match and will leave the verbatim cell empty.
 """
 
 import argparse
@@ -45,11 +51,16 @@ HUMAN_EXCEL_PATH = "path/to/human_requirements.xlsx"
 OUTPUT_EXCEL_PATH = None
 
 # Path to the ORIGINAL input document the AI extracted requirements from
-# (.pdf, .docx, or .txt). When provided, a new sheet
-# "Verbatim_Source_Per_Requirement" is added to the output Excel with the
-# verbatim source-document text alongside each generated requirement.
-# Leave as "path/to/source_document.pdf" (or None) to skip this sheet.
+# (.pdf, .docx, .txt). When provided, a second Excel file is written next to
+# OUTPUT_EXCEL_PATH: a copy of the generated requirements table with two
+# extra columns ("Source Text (Verbatim)", "Source Match Score") appended.
+# Leave as "path/to/source_document.pdf" (or None) to skip verbatim mapping.
 SOURCE_DOCUMENT_PATH = "path/to/source_document.pdf"
+
+# Optional override for the enriched-output Excel path. When None and a
+# source document is provided, the file is derived from the generated path
+# (e.g. generated_requirements_with_verbatim_<timestamp>.xlsx).
+ENRICHED_OUTPUT_PATH = None
 
 # =============================================================================
 
@@ -310,6 +321,28 @@ _PAGE_FALLBACK_RATIO = 0.45
 # Word-overlap pre-filter: keep at most this many candidate sentences per
 # requirement before running the (more expensive) SequenceMatcher.
 _PREFILTER_TOPK = 40
+# Content-word overlap floor (Jaccard) between description and matched span.
+# Filters out spurious character-level matches dominated by shared boilerplate
+# like "The system shall ...".
+_CONTENT_OVERLAP_MIN = 0.15
+# Stopwords excluded from the content-overlap check (very common spec
+# vocabulary that doesn't carry topical meaning).
+_STOPWORDS = frozenset({
+    "the", "a", "an", "and", "or", "of", "in", "on", "to", "for", "with",
+    "is", "are", "be", "by", "as", "at", "it", "its", "this", "that", "these",
+    "those", "from", "into", "shall", "must", "should", "will", "may", "can",
+    "no", "not", "all", "any", "each", "such", "via", "out", "if", "than",
+    "then", "when", "where", "while", "per", "without", "within", "between",
+    "among", "over", "under", "above", "below", "after", "before", "during",
+    "but", "do", "does", "did", "has", "have", "had", "been", "being", "their",
+    "they", "them", "his", "her", "him", "she", "he", "we", "us", "our", "you",
+    "your", "i", "me", "my", "one", "two", "etc",
+})
+
+
+def _content_words(text: str) -> set:
+    """Lower-cased content words (non-stopwords) from text."""
+    return {w for w in (m.lower() for m in _WORD_RE.findall(text)) if w not in _STOPWORDS}
 
 
 def _extract_source_pages(path: str) -> list[tuple[int | None, str]]:
@@ -480,15 +513,29 @@ def _find_verbatim_source(
                 best_page = source_index[start][0]
 
     if best_ratio < min_ratio:
-        return "", best_ratio, None
+        return "", 0.0, None
+    # Spurious-match guard: require non-trivial topical overlap (content words)
+    # between the description and the matched span. Without this, SequenceMatcher
+    # can latch onto shared boilerplate like "The widget shall ...".
+    desc_content = _content_words(desc)
+    span_content = _content_words(best_text)
+    union = desc_content | span_content
+    overlap_jaccard = (len(desc_content & span_content) / len(union)) if union else 0.0
+    if overlap_jaccard < _CONTENT_OVERLAP_MIN:
+        return "", 0.0, None
     return best_text, best_ratio, best_page
 
 
 def build_verbatim_source_df(df_gen: pd.DataFrame, source_path: str) -> pd.DataFrame:
     """
-    For every row in df_gen, locate the best verbatim span in the source
-    document and return a DataFrame mirroring df_gen plus three new columns:
-    "Source Text (Verbatim)", "Source Match Score", "Source Page (matched)".
+    Return a DataFrame that mirrors df_gen and appends two new columns to the
+    main output table:
+        - "Source Text (Verbatim)": best-matching contiguous span from the
+          original input document for this requirement's Description.
+        - "Source Match Score": similarity in [0, 1] of that span vs the
+          Description (1.0 = exact). Empty verbatim cells indicate that no
+          span scored above the acceptance threshold (a 1:1 mapping is not
+          guaranteed).
     """
     pages = _extract_source_pages(source_path)
     source_index = _build_source_index(pages)
@@ -502,37 +549,43 @@ def build_verbatim_source_df(df_gen: pd.DataFrame, source_path: str) -> pd.DataF
 
     verbatim_texts: list[str] = []
     scores: list[float] = []
-    matched_pages: list[object] = []
 
     for _, row in df_gen.iterrows():
         description = row.get(desc_col, "") if desc_col else ""
         desc_str = str(description) if description is not None else ""
         page_filter = _parse_page_number(row.get(page_col)) if page_col else None
-        text, ratio, page = _find_verbatim_source(
+        text, ratio, _ = _find_verbatim_source(
             description=desc_str,
             source_index=source_index,
             page_filter=page_filter,
         )
-        # When the page-restricted match is weak, retry without the page filter:
-        # the AI-assigned page number is often wrong (e.g., everything tagged
-        # page 1 when it actually lives later in the document).
+        # When the page-restricted match is weak, retry without the page filter.
+        # AI-assigned page numbers are sometimes wrong (e.g. everything tagged
+        # page 1 when the content actually lives later in the document).
         if page_filter is not None and ratio < _PAGE_FALLBACK_RATIO:
-            alt_text, alt_ratio, alt_page = _find_verbatim_source(
+            alt_text, alt_ratio, _ = _find_verbatim_source(
                 description=desc_str,
                 source_index=source_index,
                 page_filter=None,
             )
             if alt_ratio > ratio:
-                text, ratio, page = alt_text, alt_ratio, alt_page
+                text, ratio = alt_text, alt_ratio
         verbatim_texts.append(text)
         scores.append(round(ratio, 4))
-        matched_pages.append(page if page is not None else "")
 
     out = df_gen.copy()
     out["Source Text (Verbatim)"] = verbatim_texts
     out["Source Match Score"] = scores
-    out["Source Page (matched)"] = matched_pages
     return out
+
+
+def _derive_enriched_path(generated_path: str, override: str | None) -> str:
+    """Pick an output path for the enriched (with-verbatim) requirements Excel."""
+    if override:
+        return override
+    stem = Path(generated_path).stem or "generated_requirements"
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    return f"{stem}_with_verbatim_{ts}.xlsx"
 
 
 def run_comparison(
@@ -540,8 +593,15 @@ def run_comparison(
     human_path: str,
     output_path: str | None = None,
     source_doc_path: str | None = None,
-) -> str:
-    """Load both files, compute bulk metrics, write output Excel."""
+    enriched_output_path: str | None = None,
+) -> tuple[str, str | None]:
+    """
+    Load both files, compute bulk metrics, write the metrics Excel and -- when
+    a source document is provided -- a separate enriched generated-requirements
+    Excel with the verbatim source columns appended.
+
+    Returns (metrics_output_path, enriched_output_path_or_None).
+    """
     df_gen = load_requirements(generated_path)
     df_human = load_requirements(human_path)
     m = compute_bulk_metrics(df_gen, df_human)
@@ -595,17 +655,17 @@ def run_comparison(
                 }).fillna(0).astype(int)
                 dist_df.to_excel(writer, sheet_name=f"Dist_{col[:10]}")
 
-        # Verbatim source-text mapping (optional; requires source document)
-        if source_doc_path:
-            verbatim_df = build_verbatim_source_df(df_gen, source_doc_path)
-            verbatim_df.to_excel(
-                writer, index=False, sheet_name="Verbatim_Source_Per_Requirement"
-            )
-
         # Metrics explanation
         create_metrics_explanation_df().to_excel(writer, index=False, sheet_name="Metrics_Explanation")
 
-    return output_path
+    enriched_path = None
+    if source_doc_path:
+        enriched_path = _derive_enriched_path(generated_path, enriched_output_path)
+        verbatim_df = build_verbatim_source_df(df_gen, source_doc_path)
+        with pd.ExcelWriter(enriched_path, engine="openpyxl") as writer:
+            verbatim_df.to_excel(writer, index=False, sheet_name="Requirements")
+
+    return output_path, enriched_path
 
 
 def main():
@@ -621,8 +681,19 @@ def main():
         default=SOURCE_DOCUMENT_PATH,
         help=(
             "Optional path to the ORIGINAL input document (.pdf, .docx, .txt) "
-            "that the AI extracted requirements from. When provided, the output "
-            "Excel will include a 'Verbatim_Source_Per_Requirement' sheet."
+            "that the AI extracted requirements from. When provided, a second "
+            "Excel file is produced: a copy of the generated requirements "
+            "table with two extra columns ('Source Text (Verbatim)', "
+            "'Source Match Score') appended to the main table."
+        ),
+    )
+    parser.add_argument(
+        "--enriched-output",
+        default=ENRICHED_OUTPUT_PATH,
+        help=(
+            "Optional path for the enriched generated-requirements Excel "
+            "(only used with --source). Defaults to "
+            "'<generated-stem>_with_verbatim_<timestamp>.xlsx'."
         ),
     )
     args = parser.parse_args()
@@ -638,10 +709,16 @@ def main():
         source_doc = None
 
     try:
-        out = run_comparison(args.generated, args.human, args.output, source_doc_path=source_doc)
-        print(f"Metrics written to: {out}")
-        if source_doc:
-            print(f"Verbatim source mapping built from: {source_doc}")
+        metrics_out, enriched_out = run_comparison(
+            args.generated,
+            args.human,
+            args.output,
+            source_doc_path=source_doc,
+            enriched_output_path=args.enriched_output,
+        )
+        print(f"Metrics written to: {metrics_out}")
+        if enriched_out:
+            print(f"Enriched generated requirements (with verbatim source) written to: {enriched_out}")
     except FileNotFoundError as e:
         print(f"Error: {e}")
         sys.exit(1)
