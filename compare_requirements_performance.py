@@ -16,6 +16,10 @@ Output:
     - Summary: Bulk performance metrics
     - Distributions: VerificationMethod, RequirementType, Tags comparison
     - Metrics_Explanation: Description of each metric and what it measures
+    - Verbatim_Source_Per_Requirement (only when --source / SOURCE_DOCUMENT_PATH is provided):
+      one row per AI-generated requirement, with a "Source Text (Verbatim)" column
+      containing the contiguous span from the original input document that best
+      matches that requirement's Description.
 """
 
 import argparse
@@ -39,6 +43,13 @@ HUMAN_EXCEL_PATH = "path/to/human_requirements.xlsx"
 
 # Path for the output metrics Excel (optional; default: timestamped in current dir)
 OUTPUT_EXCEL_PATH = None
+
+# Path to the ORIGINAL input document the AI extracted requirements from
+# (.pdf, .docx, or .txt). When provided, a new sheet
+# "Verbatim_Source_Per_Requirement" is added to the output Excel with the
+# verbatim source-document text alongside each generated requirement.
+# Leave as "path/to/source_document.pdf" (or None) to skip this sheet.
+SOURCE_DOCUMENT_PATH = "path/to/source_document.pdf"
 
 # =============================================================================
 
@@ -262,7 +273,274 @@ def create_metrics_explanation_df() -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-def run_comparison(generated_path: str, human_path: str, output_path: str | None = None) -> str:
+# =============================================================================
+# Verbatim source-text matching
+# =============================================================================
+# Goal: for each AI-generated requirement, find the contiguous span from the
+# original input document that most closely matches the requirement's
+# Description, so the user can audit / quote the source verbatim.
+#
+# Strategy:
+#   1. Extract text from the source document, preserving page numbers when
+#      possible (PDF only).
+#   2. Split each page's text into sentences (long enough to be meaningful).
+#   3. For each generated requirement:
+#      a. Restrict candidates to the requirement's Page Number when present
+#         (with full-document fallback if nothing matches there).
+#      b. Use a cheap word-overlap pre-filter to keep the top-K candidates.
+#      c. Score 1..N-sentence sliding windows over those candidates with
+#         difflib.SequenceMatcher; return the highest-scoring span.
+
+_SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+|\n+")
+_WORD_RE = re.compile(r"[A-Za-z0-9]+")
+# Matches table-of-contents-style "dotted leader" lines, e.g.
+#   "3.3.5.2.7 Ballistic targets ............................................ 42"
+# These are not real prose and should not be used as verbatim source.
+_TOC_LINE_RE = re.compile(r"\.{4,}\s*\d{1,4}\s*$")
+# Minimum word count for a sentence to be indexed (filters out fragments like
+# page numbers, isolated tokens, etc.).
+_MIN_SENTENCE_WORDS = 4
+# Maximum span (in sentences) considered when assembling a verbatim match.
+_DEFAULT_MAX_WINDOW = 3
+# Below this similarity, no match is reported (avoids returning random text).
+_DEFAULT_MIN_RATIO = 0.25
+# When a page-restricted search scores below this, fall back to whole-document
+# search (the AI-assigned page number is often wrong for boilerplate pages).
+_PAGE_FALLBACK_RATIO = 0.45
+# Word-overlap pre-filter: keep at most this many candidate sentences per
+# requirement before running the (more expensive) SequenceMatcher.
+_PREFILTER_TOPK = 40
+
+
+def _extract_source_pages(path: str) -> list[tuple[int | None, str]]:
+    """
+    Extract text from the source document as (page_number, page_text) tuples.
+
+    Page numbers are 1-based for PDFs; for DOCX/TXT we return a single
+    (None, full_text) tuple because no reliable page mapping is available.
+    """
+    p = Path(path)
+    if not p.exists():
+        raise FileNotFoundError(f"Source document not found: {path}")
+    suffix = p.suffix.lower()
+    if suffix == ".pdf":
+        try:
+            import pdfplumber  # local import to keep base script light
+        except ImportError as e:
+            raise ImportError(
+                "Reading the source PDF requires pdfplumber. "
+                "Install with: pip install pdfplumber"
+            ) from e
+        pages: list[tuple[int | None, str]] = []
+        with pdfplumber.open(path) as pdf:
+            for i, page in enumerate(pdf.pages):
+                text = page.extract_text() or ""
+                pages.append((i + 1, text))
+        return pages
+    if suffix == ".docx":
+        try:
+            import docx  # python-docx
+        except ImportError as e:
+            raise ImportError(
+                "Reading the source DOCX requires python-docx. "
+                "Install with: pip install python-docx"
+            ) from e
+        d = docx.Document(path)
+        full = "\n".join(par.text for par in d.paragraphs)
+        return [(None, full)]
+    if suffix in (".txt", ".md"):
+        with open(path, "r", encoding="utf-8", errors="replace") as f:
+            return [(None, f.read())]
+    raise ValueError(
+        f"Unsupported source document type '{suffix}'. "
+        "Supported: .pdf, .docx, .txt, .md"
+    )
+
+
+def _split_sentences(text: str) -> list[str]:
+    """Split a block of text into sentence-like fragments, dropping TOC/noise lines."""
+    if not text:
+        return []
+    out: list[str] = []
+    for raw in _SENTENCE_SPLIT_RE.split(text):
+        s = raw.strip()
+        if not s:
+            continue
+        if len(_WORD_RE.findall(s)) < _MIN_SENTENCE_WORDS:
+            continue
+        # Drop dotted-leader TOC lines like "3.1.2 Section ........... 21".
+        if _TOC_LINE_RE.search(s):
+            continue
+        # Collapse internal dotted-leader runs that survived split (e.g. multi-
+        # line TOC blocks fused into one "sentence").
+        s = re.sub(r"\.{4,}", " ", s)
+        s = re.sub(r"\s+", " ", s).strip()
+        if len(_WORD_RE.findall(s)) < _MIN_SENTENCE_WORDS:
+            continue
+        out.append(s)
+    return out
+
+
+def _build_source_index(
+    pages: list[tuple[int | None, str]],
+) -> list[tuple[int | None, str, set]]:
+    """
+    Flatten pages into a list of (page_number, sentence, word_set) tuples.
+    Pre-computing word_set per sentence enables a fast overlap pre-filter.
+    """
+    index: list[tuple[int | None, str, set]] = []
+    for page_num, text in pages:
+        for sent in _split_sentences(text):
+            words = {w.lower() for w in _WORD_RE.findall(sent)}
+            index.append((page_num, sent, words))
+    return index
+
+
+def _parse_page_number(val) -> int | None:
+    """Coerce a Page Number cell to an int (handles '1', '1.0', '1-2', etc.)."""
+    if val is None or (isinstance(val, float) and pd.isna(val)):
+        return None
+    s = str(val).strip()
+    if not s or s.lower() in ("nan", "none"):
+        return None
+    m = re.search(r"\d+", s)
+    return int(m.group(0)) if m else None
+
+
+def _find_verbatim_source(
+    description: str,
+    source_index: list[tuple[int | None, str, set]],
+    page_filter: int | None = None,
+    max_window: int = _DEFAULT_MAX_WINDOW,
+    min_ratio: float = _DEFAULT_MIN_RATIO,
+) -> tuple[str, float, int | None]:
+    """
+    Find the contiguous 1..max_window-sentence span in source_index whose text
+    most closely matches `description`.
+
+    Returns (verbatim_text, similarity_ratio, page_number_of_match). When no
+    span scores above `min_ratio`, returns ("", best_ratio, None).
+    """
+    desc = (description or "").strip()
+    if not desc or not source_index:
+        return "", 0.0, None
+
+    desc_words = {w.lower() for w in _WORD_RE.findall(desc)}
+    if not desc_words:
+        return "", 0.0, None
+
+    # Build candidate index list, optionally restricted by page.
+    if page_filter is not None:
+        page_candidates = [i for i, (p, _, _) in enumerate(source_index) if p == page_filter]
+        if not page_candidates:
+            # Page filter found nothing -> fall back to whole document
+            page_candidates = list(range(len(source_index)))
+    else:
+        page_candidates = list(range(len(source_index)))
+
+    # Cheap word-overlap pre-filter: rank candidates by |desc ∩ sent| / |desc|.
+    scored = []
+    for idx in page_candidates:
+        _, _, words = source_index[idx]
+        if not words:
+            continue
+        overlap = len(desc_words & words)
+        if overlap == 0:
+            continue
+        scored.append((overlap, idx))
+    if not scored:
+        return "", 0.0, None
+    scored.sort(reverse=True)
+    top_indices = [idx for _, idx in scored[:_PREFILTER_TOPK]]
+
+    matcher = difflib.SequenceMatcher(None, autojunk=False)
+    matcher.set_seq2(desc)
+
+    n = len(source_index)
+    best_text = ""
+    best_ratio = 0.0
+    best_page: int | None = None
+
+    for start in top_indices:
+        for w in range(1, max_window + 1):
+            end = start + w
+            if end > n:
+                break
+            span = " ".join(source_index[start + k][1] for k in range(w))
+            matcher.set_seq1(span)
+            # Two cheap upper-bound checks before computing the real ratio.
+            if matcher.real_quick_ratio() < best_ratio:
+                continue
+            if matcher.quick_ratio() < best_ratio:
+                continue
+            r = matcher.ratio()
+            if r > best_ratio:
+                best_ratio = r
+                best_text = span
+                best_page = source_index[start][0]
+
+    if best_ratio < min_ratio:
+        return "", best_ratio, None
+    return best_text, best_ratio, best_page
+
+
+def build_verbatim_source_df(df_gen: pd.DataFrame, source_path: str) -> pd.DataFrame:
+    """
+    For every row in df_gen, locate the best verbatim span in the source
+    document and return a DataFrame mirroring df_gen plus three new columns:
+    "Source Text (Verbatim)", "Source Match Score", "Source Page (matched)".
+    """
+    pages = _extract_source_pages(source_path)
+    source_index = _build_source_index(pages)
+    if not source_index:
+        raise ValueError(
+            f"No usable text could be extracted from source document: {source_path}"
+        )
+
+    desc_col = "Description" if "Description" in df_gen.columns else None
+    page_col = "Page Number" if "Page Number" in df_gen.columns else None
+
+    verbatim_texts: list[str] = []
+    scores: list[float] = []
+    matched_pages: list[object] = []
+
+    for _, row in df_gen.iterrows():
+        description = row.get(desc_col, "") if desc_col else ""
+        desc_str = str(description) if description is not None else ""
+        page_filter = _parse_page_number(row.get(page_col)) if page_col else None
+        text, ratio, page = _find_verbatim_source(
+            description=desc_str,
+            source_index=source_index,
+            page_filter=page_filter,
+        )
+        # When the page-restricted match is weak, retry without the page filter:
+        # the AI-assigned page number is often wrong (e.g., everything tagged
+        # page 1 when it actually lives later in the document).
+        if page_filter is not None and ratio < _PAGE_FALLBACK_RATIO:
+            alt_text, alt_ratio, alt_page = _find_verbatim_source(
+                description=desc_str,
+                source_index=source_index,
+                page_filter=None,
+            )
+            if alt_ratio > ratio:
+                text, ratio, page = alt_text, alt_ratio, alt_page
+        verbatim_texts.append(text)
+        scores.append(round(ratio, 4))
+        matched_pages.append(page if page is not None else "")
+
+    out = df_gen.copy()
+    out["Source Text (Verbatim)"] = verbatim_texts
+    out["Source Match Score"] = scores
+    out["Source Page (matched)"] = matched_pages
+    return out
+
+
+def run_comparison(
+    generated_path: str,
+    human_path: str,
+    output_path: str | None = None,
+    source_doc_path: str | None = None,
+) -> str:
     """Load both files, compute bulk metrics, write output Excel."""
     df_gen = load_requirements(generated_path)
     df_human = load_requirements(human_path)
@@ -317,6 +595,13 @@ def run_comparison(generated_path: str, human_path: str, output_path: str | None
                 }).fillna(0).astype(int)
                 dist_df.to_excel(writer, sheet_name=f"Dist_{col[:10]}")
 
+        # Verbatim source-text mapping (optional; requires source document)
+        if source_doc_path:
+            verbatim_df = build_verbatim_source_df(df_gen, source_doc_path)
+            verbatim_df.to_excel(
+                writer, index=False, sheet_name="Verbatim_Source_Per_Requirement"
+            )
+
         # Metrics explanation
         create_metrics_explanation_df().to_excel(writer, index=False, sheet_name="Metrics_Explanation")
 
@@ -330,6 +615,16 @@ def main():
     parser.add_argument("generated", nargs="?", default=GENERATED_EXCEL_PATH, help="Path to AI-generated Excel")
     parser.add_argument("human", nargs="?", default=HUMAN_EXCEL_PATH, help="Path to human-made Excel")
     parser.add_argument("-o", "--output", default=OUTPUT_EXCEL_PATH, help="Output Excel path")
+    parser.add_argument(
+        "-s",
+        "--source",
+        default=SOURCE_DOCUMENT_PATH,
+        help=(
+            "Optional path to the ORIGINAL input document (.pdf, .docx, .txt) "
+            "that the AI extracted requirements from. When provided, the output "
+            "Excel will include a 'Verbatim_Source_Per_Requirement' sheet."
+        ),
+    )
     args = parser.parse_args()
 
     if "path/to" in str(args.generated) or "path/to" in str(args.human):
@@ -337,13 +632,23 @@ def main():
         print("       python compare_requirements_performance.py <generated.xlsx> <human.xlsx>")
         sys.exit(1)
 
+    # Source document is optional; only use it if a real path was given.
+    source_doc = args.source
+    if not source_doc or "path/to" in str(source_doc):
+        source_doc = None
+
     try:
-        out = run_comparison(args.generated, args.human, args.output)
+        out = run_comparison(args.generated, args.human, args.output, source_doc_path=source_doc)
         print(f"Metrics written to: {out}")
+        if source_doc:
+            print(f"Verbatim source mapping built from: {source_doc}")
     except FileNotFoundError as e:
         print(f"Error: {e}")
         sys.exit(1)
     except ValueError as e:
+        print(f"Error: {e}")
+        sys.exit(1)
+    except ImportError as e:
         print(f"Error: {e}")
         sys.exit(1)
     except BadZipFile as e:
