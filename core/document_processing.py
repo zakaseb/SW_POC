@@ -17,6 +17,11 @@ from .config import (
     TOKENIZER_LOCAL_PATH,
     TOKENIZER_MODEL_NAME,
 )
+from .heading_cleanup import (
+    extract_toc_lines, build_toc_set,                      # ToC
+    clean_heading_nodes,                                   # cleanup
+    build_toc_index, expand_headings_with_parents,         # parents
+)
 
 # Docling imports
 from docling.document_converter import DocumentConverter
@@ -278,12 +283,14 @@ def chunk_documents(raw_documents, storage_path=PDF_STORAGE_PATH, classify=False
             is_pdf_source = _is_pdf_source(source_path, source_docs, normalized_source)
 
             if is_pdf_source:
+                full_path = normalized_source or source_path
                 text_blocks = [d.page_content for d in source_docs if d.page_content and d.page_content.strip()]
                 if not text_blocks:
                     logger.warning(f"No extractable text found for PDF '{source_path}'.")
                     continue
                 doc_name = Path(normalized_source or source_path).stem or "document"
-                dl_doc = _build_docling_document_from_text(text_blocks, doc_name)
+                # dl_doc = _build_docling_document_from_text(text_blocks, doc_name)
+                dl_doc = converter.convert(source=full_path).document
             else:
                 full_path = normalized_source or source_path
                 if not os.path.exists(full_path):
@@ -295,6 +302,25 @@ def chunk_documents(raw_documents, storage_path=PDF_STORAGE_PATH, classify=False
                         raise FileNotFoundError(f"Resolved file path does not exist: {full_path}")
                 dl_doc = converter.convert(source=full_path).document
 
+            # PDF-only: extract the ToC, clean false/running headers against it,
+            # and build a number->heading index for parent reconstruction.
+            toc_index = {}
+            if is_pdf_source:
+                toc_lines = extract_toc_lines(full_path)
+                toc_set = build_toc_set(toc_lines)
+                dl_doc, cleanup_stats = clean_heading_nodes(dl_doc, toc_set)
+                hdrs = [
+                    item.text
+                    for item, _ in dl_doc.iterate_items()
+                    if item.label == DocItemLabel.SECTION_HEADER and item.text.strip()
+                ]
+                toc_index = build_toc_index(hdrs)
+                logger.info(
+                    f"PDF '{os.path.basename(full_path)}': cleanup removed "
+                    f"{cleanup_stats.get('total_removed', 0)}, {len(hdrs)} headings "
+                    f"-> {len(toc_index)} indexed for parent reconstruction."
+                )
+
             chunks = list(chunker.chunk(dl_doc))
             logger.info(f"Number of chunks before deduplication: {len(chunks)}")
 
@@ -305,6 +331,13 @@ def chunk_documents(raw_documents, storage_path=PDF_STORAGE_PATH, classify=False
 
                 processed_chunk_texts.add(chunk_text)
 
+                # For PDFs, expand the single leaf heading into its full ancestor
+                # chain using the ToC index. For non-PDFs (no toc_index), use the
+                # chunker's headings unchanged.
+                headings = list(c.meta.headings) if c.meta.headings else []
+                if toc_index:
+                    headings = expand_headings_with_parents(headings, toc_index)
+                    
                 if classify:
                     language_model = get_language_model()
                     classification = classify_chunk(language_model, chunk_text)
@@ -316,21 +349,21 @@ def chunk_documents(raw_documents, storage_path=PDF_STORAGE_PATH, classify=False
                         general_context_chunks.append(
                             LangchainDocument(
                                 page_content=chunk_text,
-                                metadata={**doc_metadata, "headings": c.meta.headings, "in_memory": True},
+                                metadata={**doc_metadata, "headings": headings, "in_memory": True},
                             )
                         )
                     else:
                         requirements_chunks.append(
                             LangchainDocument(
                                 page_content=chunk_text,
-                                metadata={**doc_metadata, "headings": c.meta.headings, "in_memory": False},
+                                metadata={**doc_metadata, "headings": headings, "in_memory": False},
                             )
                         )
                 else:
                     all_chunks.append(
                         LangchainDocument(
                             page_content=chunk_text,
-                            metadata={**doc_metadata, "headings": c.meta.headings, "in_memory": False},
+                            metadata={**doc_metadata, "headings": headings, "in_memory": False},
                         )
                     )
 

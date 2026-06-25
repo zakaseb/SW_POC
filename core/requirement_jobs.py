@@ -17,7 +17,9 @@ from .database import (
     list_requirement_jobs as db_list_requirement_jobs,
 )
 from .generation import generate_requirements_json, generate_excel_file, parse_requirements_payload
+from .heading_cleanup import headings_before_first_numbered
 from .logger_config import get_logger
+from core.jama_hierarchy import build_hierarchy_workbook_bytes
 
 logger = get_logger(__name__)
 OUTPUT_ROOT = Path(REQUIREMENTS_OUTPUT_PATH)
@@ -104,9 +106,31 @@ class RequirementJobManager:
             tokenized_paragraphs = [_tokenize_text(p) for p in general_paragraphs] if general_paragraphs else []
             bm25 = BM25Okapi(tokenized_paragraphs) if tokenized_paragraphs else None
 
+            # Determine front-matter headings (those before the first numbered
+            # heading) from the union of all chunk heading paths, so we can skip
+            # chunks that belong to front matter (cover, foreword, ToC, etc.).
+            all_headings_ordered = []
+            seen_h = set()
+            for chunk in requirements_chunks:
+                for h in (getattr(chunk, "metadata", {}) or {}).get("headings") or []:
+                    if h not in seen_h:
+                        seen_h.add(h)
+                        all_headings_ordered.append(h)
+            pre_numbered = set(headings_before_first_numbered(all_headings_ordered))
+
             verif_chars = len(verification_context_all)
             requirements_payload = []
+            chunk_results = []   # list of (headings_path, parsed_requirements)
+            skipped_front_matter = 0
+
             for chunk in requirements_chunks:
+                headings_path = (getattr(chunk, "metadata", {}) or {}).get("headings") or []
+
+                # Skip front-matter chunks (top heading is pre-numbered front matter).
+                if headings_path and headings_path[0] in pre_numbered:
+                    skipped_front_matter += 1
+                    continue
+
                 chunk_text = getattr(chunk, "page_content", "") or ""
                 general_context_selected = ""
                 if bm25 and chunk_text.strip():
@@ -141,9 +165,27 @@ class RequirementJobManager:
                     general_context=general_context_selected,
                 )
                 requirements_payload.append(json_response)
+                # Pair each parsed requirement group with its heading path so the
+                # hierarchy workbook can indent it under the right section.
+                chunk_results.append(
+                    (headings_path, parse_requirements_payload([json_response]))
+                )
 
-            excel_bytes = generate_excel_file(requirements_payload)
-            parsed_requirements = parse_requirements_payload(requirements_payload)
+            logger.info(
+                "Job %s: processed %d chunk(s), skipped %d front-matter chunk(s).",
+                job_id,
+                len(chunk_results),
+                skipped_front_matter,
+            )
+
+            # Build the indented Jama hierarchy workbook from (headings, reqs) pairs.
+            excel_bytes = build_hierarchy_workbook_bytes(chunk_results)
+            parsed_requirements = [
+                req for _, reqs in chunk_results for req in (reqs or [])
+            ]
+
+            # excel_bytes = generate_excel_file(requirements_payload)
+            # parsed_requirements = parse_requirements_payload(requirements_payload)
             if not excel_bytes or not parsed_requirements:
                 raise ValueError("Requirement generation produced no usable data.")
 
