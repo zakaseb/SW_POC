@@ -1,3 +1,50 @@
+# =============================================================================
+# requirements_sw_final.txt
+# Halcon JAMA-compliant MBSE Requirement Intelligence Platform
+# Python: 3.12 (validated on 3.12.13)
+#
+# Single-file install for a plain venv (no conda):
+#
+#     python3.12 -m venv .venv && source .venv/bin/activate
+#     python -m pip install --upgrade pip
+#     # 1) install the PyTorch stack for YOUR hardware (see block below)
+#     # 2) install everything else:
+#     pip install -r requirements_sw_final.txt
+#
+# -----------------------------------------------------------------------------
+# IMPORTANT - read before installing
+# -----------------------------------------------------------------------------
+# The reference environment runs on an NVIDIA DGX Spark (GB10 Grace-Blackwell,
+# sm_121, aarch64, CUDA 13) using PyTorch *nightly* cu130 wheels:
+#       torch==2.14.0.dev20260622+cu130
+#       torchvision==0.29.0.dev20260623+cu130
+#       torchaudio==2.11.0.dev20260623+cu130
+#       triton==3.7.1
+# These wheels are NOT on PyPI, are aarch64/CUDA-13 specific, and rotate off
+# the nightly index over time. Pinning them here is exactly why a plain
+# `pip install` fails on a different machine. So torch is intentionally NOT
+# pinned in this file - install it FIRST, picking the wheel index for your box:
+#
+#   CPU only (any machine):
+#       pip install torch torchvision torchaudio
+#
+#   x86_64 + CUDA 12 GPU:
+#       pip install torch torchvision torchaudio \
+#         --index-url https://download.pytorch.org/whl/cu124
+#
+#   DGX Spark / Blackwell (aarch64, CUDA 13) - matches the reference env:
+#       pip install --pre torch torchvision torchaudio \
+#         --index-url https://download.pytorch.org/whl/nightly/cu130
+#
+# The nvidia-* CUDA runtime libraries are pulled in automatically as
+# dependencies of the torch wheels, so they are deliberately not listed here.
+#
+# NOTE: the reference conda env also contained tensorflow, keras, nipype,
+# nibabel and friends. None of those are imported by this project, so they are
+# left out on purpose. The obsolete `pathlib` 1.0.1 backport that was also in
+# that env is omitted as well - it breaks pathlib on Python 3 if installed.
+# =============================================================================
+
 accelerate==1.8.1
 aiofiles==24.1.0
 aiohappyeyeballs==2.6.1
@@ -25,10 +72,10 @@ cryptography==45.0.5
 cycler==0.12.1
 dataclasses-json==0.6.7
 dill==0.4.0
-docling==2.41.0
 docling-core==2.42.0
 docling-ibm-models==3.8.1
 docling-parse==4.1.0
+docling==2.41.0
 easyocr==1.7.2
 emoji==2.14.1
 et_xmlfile==2.0.0
@@ -47,8 +94,8 @@ h11==0.16.0
 hf-xet==1.1.5
 html5lib==1.1
 httpcore==1.0.9
-httpx==0.28.1
 httpx-sse==0.4.1
+httpx==0.28.1
 huggingface-hub==0.33.2
 humanfriendly==10.0
 idna==3.10
@@ -59,14 +106,14 @@ jsonlines==3.1.0
 jsonpatch==1.33
 jsonpointer==3.0.0
 jsonref==1.1.0
-jsonschema==4.24.0
 jsonschema-specifications==2025.4.1
+jsonschema==4.24.0
 kiwisolver==1.4.8
-langchain==0.3.26
 langchain-community==0.3.27
 langchain-core==0.3.68
 langchain-ollama==0.3.3
 langchain-text-splitters==0.3.8
+langchain==0.3.26
 langdetect==1.0.9
 langsmith==0.4.4
 latex2mathml==3.78.0
@@ -89,26 +136,12 @@ networkx==3.4.2
 ninja==1.11.1.4
 nltk==3.9.1
 numpy==2.2.6
-nvidia-cublas-cu12==12.6.4.1
-nvidia-cuda-cupti-cu12==12.6.80
-nvidia-cuda-nvrtc-cu12==12.6.77
-nvidia-cuda-runtime-cu12==12.6.77
-nvidia-cudnn-cu12==9.5.1.17
-nvidia-cufft-cu12==11.3.0.4
-nvidia-cufile-cu12==1.11.1.6
-nvidia-curand-cu12==10.3.7.77
-nvidia-cusolver-cu12==11.7.1.2
-nvidia-cusparse-cu12==12.5.4.2
-nvidia-cusparselt-cu12==0.6.3
-nvidia-nccl-cu12==2.26.2
-nvidia-nvjitlink-cu12==12.6.85
-nvidia-nvtx-cu12==12.6.77
 olefile==0.47
 ollama==0.5.1
 onnx==1.18.0
 onnxruntime==1.22.1
-opencv-python==4.12.0.88
 opencv-python-headless==4.12.0.88
+opencv-python==4.12.0.88
 openpyxl==3.1.5
 orjson==3.10.18
 packaging==24.2
@@ -125,12 +158,13 @@ psutil==7.0.0
 pyarrow==20.0.0
 pyclipper==1.3.0.post6
 pycparser==2.22
-pydantic==2.11.7
 pydantic-settings==2.10.1
+pydantic==2.11.7
 pydantic_core==2.33.2
 pydeck==0.9.1
 Pygments==2.19.2
 pylatexenc==2.10
+pymupdf==1.27.2.3
 pyparsing==3.2.3
 pypdf==5.8.0
 pypdfium2==4.30.1
@@ -149,8 +183,8 @@ rank-bm25==0.2.2
 RapidFuzz==3.13.0
 referencing==0.36.2
 regex==2024.11.6
-requests==2.32.4
 requests-toolbelt==1.0.0
+requests==2.32.4
 rich==14.0.0
 rpds-py==0.26.0
 rtree==1.4.0
@@ -172,27 +206,24 @@ streamlit==1.46.1
 sympy==1.14.0
 tabulate==0.9.0
 tenacity==9.1.2
+tf-keras==2.20.1
 threadpoolctl==3.6.0
 tifffile==2025.5.10
 tiktoken==0.8.0
 timm==1.0.17
 tokenizers==0.21.2
 toml==0.10.2
-torch==2.7.1
-torchvision==0.22.1
 tornado==6.5.1
 tqdm==4.67.1
 transformers==4.53.1
-tf-keras==2.20.1
-triton==3.3.1
 typer==0.16.0
 typing-inspect==0.9.0
 typing-inspection==0.4.1
 typing_extensions==4.14.1
 tzdata==2025.2
-unstructured==0.18.5
 unstructured-client==0.38.1
 unstructured-inference==1.0.5
+unstructured==0.18.5
 urllib3==2.5.0
 uvicorn==0.38.0
 watchdog==6.0.0
@@ -201,4 +232,3 @@ wrapt==1.17.2
 xlsxwriter==3.2.5
 yarl==1.20.1
 zstandard==0.23.0
-pymupdf==1.27.2.3
