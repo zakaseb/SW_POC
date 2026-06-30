@@ -1,5 +1,6 @@
 import os
 import re
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 import streamlit as st
 from langchain_community.document_loaders import PDFPlumberLoader
@@ -24,7 +25,6 @@ from .heading_cleanup import (
 )
 
 # Docling imports
-from docling.document_converter import DocumentConverter
 from docling.chunking import HybridChunker
 from docling_core.transforms.chunker.tokenizer.huggingface import HuggingFaceTokenizer
 from docling_core.types import DoclingDocument
@@ -33,6 +33,9 @@ from transformers import AutoTokenizer
 from urllib.parse import unquote, urlparse
 
 logger = get_logger(__name__)
+
+# Parallel Ollama calls during chunk classification; keep modest to avoid overloading.
+_CLASSIFY_MAX_WORKERS = 4
 
 
 def _resolve_max_tokens(tokenizer) -> int:
@@ -257,7 +260,6 @@ def chunk_documents(raw_documents, storage_path=PDF_STORAGE_PATH, classify=False
     logger.info(f"Starting Docling hybrid chunking on {len(raw_documents)} document(s).")
 
     try:
-        converter = DocumentConverter()
         tokenizer = _load_docling_tokenizer()
         if tokenizer is None:
             return [], [], []
@@ -269,6 +271,7 @@ def chunk_documents(raw_documents, storage_path=PDF_STORAGE_PATH, classify=False
         general_context_chunks = []
         requirements_chunks = []
         processed_chunk_texts = set()
+        chunks_pending_classification: list[tuple[str, list, dict]] = []
 
         docs_by_source: dict[str, list[LangchainDocument]] = {}
         for doc in raw_documents:
@@ -282,44 +285,41 @@ def chunk_documents(raw_documents, storage_path=PDF_STORAGE_PATH, classify=False
             normalized_source = _normalize_source_path(source_path)
             is_pdf_source = _is_pdf_source(source_path, source_docs, normalized_source)
 
+            text_blocks = [
+                d.page_content for d in source_docs if d.page_content and d.page_content.strip()
+            ]
+            if not text_blocks:
+                logger.warning(f"No extractable text found for '{source_path}'.")
+                continue
+
+            doc_name = Path(normalized_source or source_path).stem or "document"
+            dl_doc = _build_docling_document_from_text(text_blocks, doc_name)
+
+            # PDF-only: extract the ToC and build a number->heading index for parent
+            # reconstruction. Text is already extracted via PDFPlumber — skip the
+            # slow Docling layout/OCR convert path.
+            toc_index = {}
             if is_pdf_source:
-                full_path = normalized_source or source_path
-                text_blocks = [d.page_content for d in source_docs if d.page_content and d.page_content.strip()]
-                if not text_blocks:
-                    logger.warning(f"No extractable text found for PDF '{source_path}'.")
-                    continue
-                doc_name = Path(normalized_source or source_path).stem or "document"
-                # dl_doc = _build_docling_document_from_text(text_blocks, doc_name)
-                dl_doc = converter.convert(source=full_path).document
-            else:
                 full_path = normalized_source or source_path
                 if not os.path.exists(full_path):
                     logger.warning(
                         f"Source path '{full_path}' not found. Attempting to resolve with storage path '{storage_path}'."
                     )
                     full_path = os.path.join(storage_path, os.path.basename(source_path))
-                    if not os.path.exists(full_path):
-                        raise FileNotFoundError(f"Resolved file path does not exist: {full_path}")
-                dl_doc = converter.convert(source=full_path).document
-
-            # PDF-only: extract the ToC, clean false/running headers against it,
-            # and build a number->heading index for parent reconstruction.
-            toc_index = {}
-            if is_pdf_source:
-                toc_lines = extract_toc_lines(full_path)
-                toc_set = build_toc_set(toc_lines)
-                dl_doc, cleanup_stats = clean_heading_nodes(dl_doc, toc_set)
-                hdrs = [
-                    item.text
-                    for item, _ in dl_doc.iterate_items()
-                    if item.label == DocItemLabel.SECTION_HEADER and item.text.strip()
-                ]
-                toc_index = build_toc_index(hdrs)
-                logger.info(
-                    f"PDF '{os.path.basename(full_path)}': cleanup removed "
-                    f"{cleanup_stats.get('total_removed', 0)}, {len(hdrs)} headings "
-                    f"-> {len(toc_index)} indexed for parent reconstruction."
-                )
+                if os.path.exists(full_path):
+                    toc_lines = extract_toc_lines(full_path)
+                    toc_set = build_toc_set(toc_lines)
+                    dl_doc, cleanup_stats = clean_heading_nodes(dl_doc, toc_set)
+                    toc_index = build_toc_index(toc_lines)
+                    logger.info(
+                        f"PDF '{os.path.basename(full_path)}': cleanup removed "
+                        f"{cleanup_stats.get('total_removed', 0)}, {len(toc_lines)} ToC lines "
+                        f"-> {len(toc_index)} indexed for parent reconstruction."
+                    )
+                else:
+                    logger.warning(
+                        f"PDF path '{full_path}' not found; skipping ToC-based heading expansion."
+                    )
 
             chunks = list(chunker.chunk(dl_doc))
             logger.info(f"Number of chunks before deduplication: {len(chunks)}")
@@ -337,30 +337,46 @@ def chunk_documents(raw_documents, storage_path=PDF_STORAGE_PATH, classify=False
                 headings = list(c.meta.headings) if c.meta.headings else []
                 if toc_index:
                     headings = expand_headings_with_parents(headings, toc_index)
-                    
+
                 if classify:
-                    language_model = get_language_model()
-                    classification = classify_chunk(language_model, chunk_text)
-                    print(f"--- Chunk {i+1} ---")
-                    print(f"Classification: {classification}")
-                    print(f"Text: {chunk_text}")
-                    print("--------------------")
-                    if classification == "General Context":
-                        general_context_chunks.append(
-                            LangchainDocument(
-                                page_content=chunk_text,
-                                metadata={**doc_metadata, "headings": headings, "in_memory": True},
-                            )
-                        )
-                    else:
-                        requirements_chunks.append(
-                            LangchainDocument(
-                                page_content=chunk_text,
-                                metadata={**doc_metadata, "headings": headings, "in_memory": False},
-                            )
-                        )
+                    chunks_pending_classification.append((chunk_text, headings, doc_metadata))
                 else:
                     all_chunks.append(
+                        LangchainDocument(
+                            page_content=chunk_text,
+                            metadata={**doc_metadata, "headings": headings, "in_memory": False},
+                        )
+                    )
+
+        if classify and chunks_pending_classification:
+            language_model = get_language_model()
+            if language_model is None:
+                logger.error("Language model unavailable; cannot classify document chunks.")
+                st.error("Language model unavailable; cannot classify document chunks.")
+                return [], [], []
+
+            def _classify_one(item: tuple[str, list, dict]):
+                chunk_text, headings, doc_metadata = item
+                classification = classify_chunk(language_model, chunk_text)
+                return chunk_text, headings, doc_metadata, classification
+
+            workers = min(_CLASSIFY_MAX_WORKERS, len(chunks_pending_classification))
+            logger.info(
+                f"Classifying {len(chunks_pending_classification)} chunk(s) with {workers} worker(s)."
+            )
+            with ThreadPoolExecutor(max_workers=workers) as executor:
+                classified = list(executor.map(_classify_one, chunks_pending_classification))
+
+            for chunk_text, headings, doc_metadata, classification in classified:
+                if classification == "General Context":
+                    general_context_chunks.append(
+                        LangchainDocument(
+                            page_content=chunk_text,
+                            metadata={**doc_metadata, "headings": headings, "in_memory": True},
+                        )
+                    )
+                else:
+                    requirements_chunks.append(
                         LangchainDocument(
                             page_content=chunk_text,
                             metadata={**doc_metadata, "headings": headings, "in_memory": False},
