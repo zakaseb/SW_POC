@@ -402,19 +402,19 @@ def index_documents(document_chunks, vector_db=None):
     if not document_chunks:
         logger.warning("index_documents called with no chunks to index.")
         st.warning("No document chunks available to index.")
-        return
+        return False
     logger.info(f"Indexing {len(document_chunks)} document chunks.")
     try:
         if vector_db is None:
             vector_db = st.session_state.DOCUMENT_VECTOR_DB
         vector_db.add_documents(document_chunks)
-        st.session_state.document_processed = True
         logger.info("Document chunks indexed successfully into vector store.")
+        return True
     except Exception as e:
         user_message = "An error occurred while indexing document chunks."
         logger.exception(f"{user_message} Details: {e}")
         st.error(f"{user_message} Check logs for details.")
-        st.session_state.document_processed = False
+        return False
 
 
 def re_index_documents_from_session():

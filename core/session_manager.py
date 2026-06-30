@@ -101,6 +101,8 @@ def initialize_session_state():
         st.session_state.raw_documents = []
     if "processed_files_info" not in st.session_state:
         st.session_state.processed_files_info = {}
+    if "document_upload_in_progress" not in st.session_state:
+        st.session_state.document_upload_in_progress = False
     if "processed_context_file_info" not in st.session_state:
         st.session_state.processed_context_file_info = None
     if "document_summary" not in st.session_state:
@@ -124,6 +126,7 @@ def reset_document_states(clear_chat=True):
     st.session_state.processed_files_info = {}
     st.session_state.uploaded_filenames = []
     st.session_state.raw_documents = []
+    st.session_state.document_upload_in_progress = False
 
     # Reset generated content
     st.session_state.document_summary = None

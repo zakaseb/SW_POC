@@ -377,10 +377,10 @@ def test_index_documents_success(mock_session_state, mock_logger_fixture):
         LangchainDocument(page_content="chunk1"),
         LangchainDocument(page_content="chunk2"),
     ]
-    index_documents(mock_chunks)
+    assert index_documents(mock_chunks) is True
 
     mock_vector_db_instance.add_documents.assert_called_once_with(mock_chunks)
-    assert mock_session_state.document_processed is True
+    assert mock_session_state.document_processed is not True  # index_documents no longer sets this flag
     mock_logger_fixture.info.assert_any_call(
         f"Indexing {len(mock_chunks)} document chunks."
     )
@@ -411,8 +411,7 @@ def test_index_documents_exception_on_add(
     mock_session_state.document_processed = True
 
     mock_chunks = [LangchainDocument(page_content="chunk1")]
-    index_documents(mock_chunks)
+    assert index_documents(mock_chunks) is False
 
     mock_st_error.assert_called_once()
     mock_logger_fixture.exception.assert_called_once()
-    assert mock_session_state.document_processed is False
