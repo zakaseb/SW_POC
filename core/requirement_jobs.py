@@ -17,7 +17,7 @@ from .database import (
     list_requirement_jobs as db_list_requirement_jobs,
 )
 from .generation import generate_requirements_json, generate_excel_file, parse_requirements_payload
-from .heading_cleanup import headings_before_first_numbered
+from .heading_cleanup import headings_before_first_numbered, is_numbered_heading
 from .logger_config import get_logger
 from core.jama_hierarchy import build_hierarchy_workbook_bytes
 
@@ -121,6 +121,13 @@ class RequirementJobManager:
                         seen_h.add(h)
                         all_headings_ordered.append(h)
             pre_numbered = set(headings_before_first_numbered(all_headings_ordered))
+            # Only treat headings as front matter when the document actually has
+            # numbered sections. With native Docling conversion every chunk shares
+            # a non-numbered document-title root, and unnumbered documents would
+            # otherwise have *every* heading classified as front matter.
+            has_numbered_sections = any(
+                is_numbered_heading(h) for h in all_headings_ordered
+            )
 
             verif_chars = len(verification_context_all)
             requirements_payload = []
@@ -130,8 +137,13 @@ class RequirementJobManager:
             for chunk in requirements_chunks:
                 headings_path = (getattr(chunk, "metadata", {}) or {}).get("headings") or []
 
-                # Skip front-matter chunks (top heading is pre-numbered front matter).
-                if headings_path and headings_path[0] in pre_numbered:
+                # Skip front-matter chunks. A chunk is front matter when its
+                # deepest (leaf) heading is one of the pre-numbered front-matter
+                # sections (cover, approvals, ToC, etc.). Checking the leaf rather
+                # than the root avoids misclassifying real requirement chunks that
+                # share a non-numbered document-title root.
+                leaf_heading = headings_path[-1] if headings_path else ""
+                if has_numbered_sections and leaf_heading in pre_numbered:
                     skipped_front_matter += 1
                     continue
 

@@ -110,14 +110,63 @@ def _split_text_blocks(text: str) -> list[str]:
 
 def _build_docling_document_from_text(text_blocks: list[str], document_name: str) -> DoclingDocument:
     """
-    Build a minimal DoclingDocument from extracted text blocks to avoid
-    requiring PDF layout models when running offline.
+    Build a minimal DoclingDocument from extracted text blocks. Used as a
+    fallback when native Docling conversion is unavailable (e.g. the source file
+    is not on disk). Note: this produces TEXT-only items with no SECTION_HEADER
+    structure, so chunks built from it carry no heading hierarchy.
     """
     doc = DoclingDocument(name=document_name or "document")
     for block in text_blocks:
         for paragraph in _split_text_blocks(block):
             doc.add_text(label=DocItemLabel.TEXT, text=paragraph)
     return doc
+
+
+# Cache Docling converters so layout models are loaded at most once per process.
+_DOCLING_CONVERTERS: dict[bool, object] = {}
+
+
+def _get_docling_converter(is_pdf: bool):
+    """
+    Return a cached Docling DocumentConverter. For PDFs, OCR and table-structure
+    detection are disabled: the structural (heading) information needed for the
+    requirements hierarchy is recovered from the layout model alone, while
+    skipping the expensive OCR pass that previously made processing hang.
+    """
+    if is_pdf not in _DOCLING_CONVERTERS:
+        from docling.document_converter import DocumentConverter
+
+        if is_pdf:
+            from docling.datamodel.base_models import InputFormat
+            from docling.datamodel.pipeline_options import PdfPipelineOptions
+            from docling.document_converter import PdfFormatOption
+
+            pdf_options = PdfPipelineOptions()
+            pdf_options.do_ocr = False
+            pdf_options.do_table_structure = False
+            _DOCLING_CONVERTERS[is_pdf] = DocumentConverter(
+                format_options={InputFormat.PDF: PdfFormatOption(pipeline_options=pdf_options)}
+            )
+        else:
+            _DOCLING_CONVERTERS[is_pdf] = DocumentConverter()
+    return _DOCLING_CONVERTERS[is_pdf]
+
+
+def _convert_with_docling(full_path: str, is_pdf: bool):
+    """
+    Run Docling's native conversion to obtain a DoclingDocument that preserves
+    SECTION_HEADER structure. Returns None on failure so callers can fall back
+    to the text-only document builder.
+    """
+    try:
+        converter = _get_docling_converter(is_pdf)
+        return converter.convert(source=full_path).document
+    except Exception as exc:
+        logger.warning(
+            f"Native Docling conversion failed for '{full_path}': {exc}. "
+            "Falling back to text-only document (headings will be unavailable)."
+        )
+        return None
 
 
 def _normalize_source_path(source_path: str) -> str:
@@ -293,19 +342,30 @@ def chunk_documents(raw_documents, storage_path=PDF_STORAGE_PATH, classify=False
                 continue
 
             doc_name = Path(normalized_source or source_path).stem or "document"
-            dl_doc = _build_docling_document_from_text(text_blocks, doc_name)
+
+            # Resolve the on-disk path once; it drives both native conversion and
+            # (for PDFs) ToC extraction.
+            full_path = normalized_source or source_path
+            if not os.path.exists(full_path):
+                logger.warning(
+                    f"Source path '{full_path}' not found. Attempting to resolve with storage path '{storage_path}'."
+                )
+                full_path = os.path.join(storage_path, os.path.basename(source_path))
+
+            # Prefer Docling's native conversion so SECTION_HEADER structure (and
+            # therefore the heading hierarchy that drives the requirements
+            # workbook indentation) is preserved. Fall back to a text-only
+            # document only when the file isn't on disk or conversion fails.
+            dl_doc = None
+            if os.path.exists(full_path):
+                dl_doc = _convert_with_docling(full_path, is_pdf_source)
+            if dl_doc is None:
+                dl_doc = _build_docling_document_from_text(text_blocks, doc_name)
 
             # PDF-only: extract the ToC and build a number->heading index for parent
-            # reconstruction. Text is already extracted via PDFPlumber — skip the
-            # slow Docling layout/OCR convert path.
+            # reconstruction, and drop running headers/footers and false headings.
             toc_index = {}
             if is_pdf_source:
-                full_path = normalized_source or source_path
-                if not os.path.exists(full_path):
-                    logger.warning(
-                        f"Source path '{full_path}' not found. Attempting to resolve with storage path '{storage_path}'."
-                    )
-                    full_path = os.path.join(storage_path, os.path.basename(source_path))
                 if os.path.exists(full_path):
                     toc_lines = extract_toc_lines(full_path)
                     toc_set = build_toc_set(toc_lines)
@@ -331,11 +391,13 @@ def chunk_documents(raw_documents, storage_path=PDF_STORAGE_PATH, classify=False
 
                 processed_chunk_texts.add(chunk_text)
 
-                # For PDFs, expand the single leaf heading into its full ancestor
-                # chain using the ToC index. For non-PDFs (no toc_index), use the
-                # chunker's headings unchanged.
+                # For PDFs, expand a numbered leaf heading into its full ancestor
+                # chain. The ToC index (when PyMuPDF is available) supplies real
+                # parent titles; otherwise depth is still reconstructed from the
+                # leaf's section number so indentation is preserved. For non-PDFs,
+                # the chunker already provides the full heading chain.
                 headings = list(c.meta.headings) if c.meta.headings else []
-                if toc_index:
+                if is_pdf_source and headings:
                     headings = expand_headings_with_parents(headings, toc_index)
 
                 if classify:
