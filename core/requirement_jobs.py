@@ -44,6 +44,10 @@ class RequirementJobManager:
                 cls._instance = cls()
             return cls._instance
 
+    def active_job_ids(self) -> set:
+        """Job ids with a live worker future in THIS process."""
+        return set(self._active_jobs.keys())
+
     def submit_generation_job(
         self,
         *,
@@ -258,6 +262,39 @@ def _tokenize_text(text: str) -> List[str]:
 # Convenience exports
 def submit_requirement_generation_job(**kwargs) -> str:
     return RequirementJobManager.instance().submit_generation_job(**kwargs)
+
+
+def is_job_active(job_id: str) -> bool:
+    """True if the job has a live worker future in the current process."""
+    if not job_id:
+        return False
+    return job_id in RequirementJobManager.instance().active_job_ids()
+
+
+def reconcile_stale_jobs(user_id: int) -> int:
+    """Mark jobs left in 'queued'/'running' by a previous (now-dead) process as failed.
+
+    Requirement jobs run inside the Streamlit process via an in-memory thread pool.
+    If the process is restarted while a job is in flight, the DB row stays 'running'
+    forever even though no worker exists. The UI then polls that status on a 3s loop
+    indefinitely. Here we detect such rows (queued/running but with no live worker in
+    THIS process) and fail them so the UI stops polling. Returns the count reconciled.
+    """
+    if not user_id:
+        return 0
+    active = RequirementJobManager.instance().active_job_ids()
+    reconciled = 0
+    for job in db_list_requirement_jobs(user_id, limit=50):
+        if job.get("status") in {"queued", "running"} and job.get("id") not in active:
+            update_requirement_job(
+                job["id"],
+                status="failed",
+                error_message="Job was interrupted (application restarted before it finished). Please run it again.",
+            )
+            reconciled += 1
+    if reconciled:
+        logger.info("Reconciled %d stale requirement job(s) for user %s.", reconciled, user_id)
+    return reconciled
 
 
 def get_requirement_job(job_id: str):

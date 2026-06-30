@@ -59,6 +59,8 @@ from core.requirement_jobs import (
     list_requirement_jobs,
     load_job_excel_bytes,
     load_job_requirements,
+    reconcile_stale_jobs,
+    is_job_active,
 )
 
 from core.config import USE_API_WRAPPER, API_URL
@@ -169,6 +171,10 @@ def refresh_requirement_job_state():
     if not user_id:
         return
 
+    # Fail any job left 'queued'/'running' by a previous process so the UI does not
+    # poll a dead job forever (which would reload the page every few seconds).
+    reconcile_stale_jobs(user_id)
+
     latest_job = get_latest_requirement_job(user_id)
     previous_job_id = st.session_state.get("latest_requirement_job_id")
     latest_job_id = latest_job.get("id") if latest_job else None
@@ -202,10 +208,16 @@ def refresh_requirement_job_state():
 
 
 def schedule_job_status_refresh():
-    """Auto-refresh the UI while a requirement job is running."""
+    """Auto-refresh the UI while a requirement job is actively running.
+
+    Only polls jobs that have a live worker in this process. A job marked
+    'running' in the DB without a live worker (e.g. left over from a previous
+    process) is never polled here, preventing an endless 3s reload loop.
+    """
     job_info = st.session_state.get("latest_requirement_job")
     status = job_info.get("status") if job_info else None
-    if status in {"queued", "running"}:
+    job_id = job_info.get("id") if job_info else None
+    if status in {"queued", "running"} and is_job_active(job_id):
         time.sleep(JOB_STATUS_POLL_SECONDS)
         st.rerun()
 
