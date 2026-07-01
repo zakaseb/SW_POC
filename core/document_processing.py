@@ -370,7 +370,12 @@ def chunk_documents(raw_documents, storage_path=PDF_STORAGE_PATH, classify=False
                     toc_lines = extract_toc_lines(full_path)
                     toc_set = build_toc_set(toc_lines)
                     dl_doc, cleanup_stats = clean_heading_nodes(dl_doc, toc_set)
-                    toc_index = build_toc_index(toc_lines)
+                    hdrs = [
+                        item.text
+                        for item, _ in dl_doc.iterate_items()
+                        if item.label == DocItemLabel.SECTION_HEADER and item.text.strip()
+                    ]
+                    toc_index = build_toc_index(hdrs)
                     logger.info(
                         f"PDF '{os.path.basename(full_path)}': cleanup removed "
                         f"{cleanup_stats.get('total_removed', 0)}, {len(toc_lines)} ToC lines "
