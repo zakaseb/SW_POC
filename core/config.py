@@ -170,7 +170,7 @@ Classification:
 
 # ========== Hard defaults (no env required) ==========
 # Models
-OLLAMA_EMBEDDING_MODEL_NAME = "mistral:7b"  
+OLLAMA_EMBEDDING_MODEL_NAME = "nomic-embed-text:latest"
 OLLAMA_LLM_NAME             = "mistral:7b"
 RERANKER_MODEL_NAME         = "cross-encoder/ms-marco-MiniLM-L-6-v2"
 # Local HF cache + offline guardrails
@@ -242,6 +242,12 @@ if HF_LOCAL_FILES_ONLY:
     os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
     os.environ.setdefault("HF_HOME", str(MODEL_CACHE_DIR))
     os.environ.setdefault("TRANSFORMERS_CACHE", str(MODEL_CACHE_DIR))
+
+# --- Docling PDF pipeline (layout + OCR) artifacts ---
+DOCLING_ARTIFACTS_PATH = MODEL_CACHE_DIR / "docling"
+DOCLING_ARTIFACTS_PATH.mkdir(parents=True, exist_ok=True)
+if HF_LOCAL_FILES_ONLY:
+    os.environ.setdefault("DOCLING_ARTIFACTS_PATH", str(DOCLING_ARTIFACTS_PATH))
 
 # Ensure directories exist
 for p in (PDF_STORAGE_PATH, CONTEXT_PDF_STORAGE_PATH, Path(MEMORY_FILE_PATH).parent, REQUIREMENTS_OUTPUT_PATH, MODEL_CACHE_DIR):

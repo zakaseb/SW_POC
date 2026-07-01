@@ -10,6 +10,12 @@ venv/
 # Uploaded PDFs directory (if you don't want to commit user uploads)
 document_store/pdfs/
 
+# Generated Requirements
+document_store/generated_requirements/
+
+#downloaded models
+models/
+
 # Database
 users.db
 

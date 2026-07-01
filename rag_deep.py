@@ -49,6 +49,9 @@ from core.session_manager import (
     reset_document_states,
     reset_file_uploader,
     purge_persistent_memory,
+    should_show_processed_documents_banner,
+    get_processed_document_names,
+    uploaded_files_fingerprint,
 )
 from core.database import save_session
 from core.session_utils import package_session_for_storage
@@ -59,6 +62,7 @@ from core.requirement_jobs import (
     list_requirement_jobs,
     load_job_excel_bytes,
     load_job_requirements,
+    reconcile_stale_jobs,
 )
 
 from core.config import USE_API_WRAPPER, API_URL
@@ -312,6 +316,15 @@ if (st.session_state.get("authenticated")
     st.session_state["did_context_bootstrap"] = True
     st.session_state["context_document_loaded"] = True
 
+# Fail any jobs left in 'queued'/'running' by a previous (now-dead) process once
+# per session. Otherwise the UI polls their status on an endless ~3s rerun loop,
+# which wipes transient upload banners and can interrupt document processing.
+if (st.session_state.get("authenticated")
+    and st.session_state.get("user_id")
+    and not st.session_state.get("stale_jobs_reconciled")):
+    reconcile_stale_jobs(st.session_state.user_id)
+    st.session_state["stale_jobs_reconciled"] = True
+
 # Keep requirement job state in sync for authenticated users
 if st.session_state.get("authenticated") and st.session_state.get("user_id"):
     refresh_requirement_job_state()
@@ -464,7 +477,7 @@ uploaded_files = st.file_uploader(
 )
 
 if uploaded_files:
-    current_uploaded_files_info = {f.name: f.size for f in uploaded_files}
+    current_uploaded_files_info = uploaded_files_fingerprint(uploaded_files)
     logger.info(f"Files uploaded: {list(current_uploaded_files_info.keys())}")
 
     log_ui_event_to_api(
@@ -474,116 +487,171 @@ if uploaded_files:
 
     # Check if the uploaded files are the same as the ones already processed
     if current_uploaded_files_info != st.session_state.get("processed_files_info", {}):
-        logger.info("New set of files detected. Resetting document states and file uploader.")
-        reset_document_states(clear_chat=True)
-        # It's important to call reset_file_uploader to ensure the UI component updates
-        reset_file_uploader()
+        processed_snapshot = st.session_state.get("processed_files_info") or {}
+        # Block only when the same in-flight upload is being retried on a rerun
+        # (processed was cleared by reset, so the snapshot is empty). If the
+        # uploader now holds a different file than what is already processed,
+        # clear a stale in_progress flag and start fresh.
+        if st.session_state.get("document_upload_in_progress"):
+            if not processed_snapshot:
+                st.info("Document processing is already in progress. Please wait...")
+            else:
+                st.session_state.document_upload_in_progress = False
 
-        all_raw_docs_for_session = []
-        successfully_loaded_filenames = []
-        processed_files_info = {}
+        if not st.session_state.get("document_upload_in_progress"):
+            st.session_state.document_upload_in_progress = True
+            logger.info("New set of files detected. Resetting document states for reprocessing.")
+            reset_document_states(clear_chat=True)
 
-        for uploaded_file_obj in uploaded_files:
-            filename = uploaded_file_obj.name
-            file_size = uploaded_file_obj.size
-            logger.debug(f"Processing uploaded file: {filename}")
+            all_raw_docs_for_session = []
+            successfully_loaded_filenames = []
+            processed_files_info = {}
 
-            with st.spinner(f"Processing '{filename}'... This may take a moment."):
-                saved_path = save_uploaded_file(uploaded_file_obj, PDF_STORAGE_PATH)
-                # saved_path = save_uploaded_file(uploaded_file_obj, PDF_STORAGE_PATH, allow_context=False)
-                if saved_path:
-                    logger.info(f"File '{filename}' saved to '{saved_path}'")
-                    raw_docs_from_file = load_document(saved_path)
-                    if raw_docs_from_file:
-                        all_raw_docs_for_session.extend(raw_docs_from_file)
-                        successfully_loaded_filenames.append(filename)
-                        processed_files_info[filename] = file_size
-                        logger.info(f"Successfully loaded and parsed: {filename}")
-                    else:
-                        st.error(f"Could not load document from '{filename}'. It might be empty, corrupted, or an unsupported type.")
-                        logger.error(f"Failed to load document from '{filename}'.")
-                else:
-                    st.error(f"Failed to save '{filename}'. It will be skipped.")
-                    logger.error(f"Failed to save '{filename}'.")
+            try:
+                for uploaded_file_obj in uploaded_files:
+                    filename = uploaded_file_obj.name
+                    file_size = uploaded_file_obj.size
+                    logger.debug(f"Processing uploaded file: {filename}")
 
-        st.session_state.uploaded_filenames = successfully_loaded_filenames
-        st.session_state.processed_files_info = processed_files_info
-
-        if all_raw_docs_for_session:
-            st.session_state.raw_documents = all_raw_docs_for_session
-            logger.info(f"Total {len(all_raw_docs_for_session)} raw documents collected from {len(successfully_loaded_filenames)} files.")
-
-            with st.spinner(f"Chunking, classifying, and indexing {len(st.session_state.uploaded_filenames)} document(s)..."):
-                logger.debug("Starting document chunking and classification.")
-                general_context_chunks, requirements_chunks, _ = chunk_documents(st.session_state.raw_documents, classify=True)
-
-                total_chunks = len(general_context_chunks) + len(requirements_chunks)
-                if total_chunks > 0:
-                    st.success(f"Document chunking and classification complete. Found {len(general_context_chunks)} general context chunks and {len(requirements_chunks)} requirements chunks.")
-                    logger.info(f"{total_chunks} total chunks created.")
-
-                    # Index general context chunks into the general vector DB
-                    if general_context_chunks:
-                        st.session_state.general_context_chunks = general_context_chunks
-                        logger.debug("Starting indexing of general context chunks.")
-                        index_documents(general_context_chunks, vector_db=st.session_state.GENERAL_VECTOR_DB)
-                        logger.info(f"{len(general_context_chunks)} general context chunks indexed.")
-                        st.info(f"ℹ️ {len(general_context_chunks)} chunks have been added to the session's persistent memory.")
-
-                    # Index requirements chunks into the main document vector DB
-                    if requirements_chunks:
-                        st.session_state.requirements_chunks = requirements_chunks
-                        logger.debug("Starting indexing of requirements chunks.")
-                        index_documents(requirements_chunks, vector_db=st.session_state.DOCUMENT_VECTOR_DB)
-                        logger.info(f"{len(requirements_chunks)} requirements chunks indexed.")
-
-                    if st.session_state.get("document_processed", False):
-                        logger.info("Vector indexing successful for one or both chunk types.")
-                        try:
-                            logger.debug("Starting BM25 indexing on requirements chunks.")
-                            corpus_texts = [chunk.page_content for chunk in requirements_chunks]
-                            if corpus_texts:
-                                tokenized_corpus = [doc.lower().split(" ") for doc in corpus_texts]
-                                st.session_state.bm25_index = BM25Okapi(tokenized_corpus)
-                                st.session_state.bm25_corpus_chunks = requirements_chunks
-                                display_filenames = ", ".join(st.session_state.uploaded_filenames)
-                                logger.info(f"BM25 index created for documents: {display_filenames}")
-                                st.success(f"✅ Documents ({display_filenames}) processed and indexed successfully!")
-                                log_ui_event_to_api(
-                                "documents_processed",
-                                {
-                                    "filenames": st.session_state.uploaded_filenames,
-                                    "num_general_chunks": len(general_context_chunks),
-                                    "num_requirements_chunks": len(requirements_chunks),
-                                },)
+                    with st.spinner(f"Processing '{filename}'... This may take a moment."):
+                        saved_path = save_uploaded_file(uploaded_file_obj, PDF_STORAGE_PATH)
+                        if saved_path:
+                            logger.info(f"File '{filename}' saved to '{saved_path}'")
+                            raw_docs_from_file = load_document(saved_path)
+                            if raw_docs_from_file:
+                                all_raw_docs_for_session.extend(raw_docs_from_file)
+                                successfully_loaded_filenames.append(filename)
+                                processed_files_info[filename] = file_size
+                                logger.info(f"Successfully loaded and parsed: {filename}")
                             else:
-                                logger.info("No requirements chunks to index for BM25.")
-                                st.success("✅ Documents processed. No specific requirements chunks found for keyword search indexing.")
+                                st.error(f"Could not load document from '{filename}'. It might be empty, corrupted, or an unsupported type.")
+                                logger.error(f"Failed to load document from '{filename}'.")
+                        else:
+                            st.error(f"Failed to save '{filename}'. It will be skipped.")
+                            logger.error(f"Failed to save '{filename}'.")
 
-                        except Exception as e:
-                            display_filenames = ", ".join(st.session_state.uploaded_filenames)
-                            logger.exception(f"Failed to create BM25 index for documents ({display_filenames}).")
-                            st.error(f"Failed to create BM25 index for documents ({display_filenames}). Vector indexing may still be active. Details: {e}")
-                    else:
-                        display_filenames = ", ".join(st.session_state.uploaded_filenames)
-                        logger.error(f"Vector indexing failed for documents ({display_filenames}). BM25 indexing skipped.")
-                        st.error(f"Documents ({display_filenames}) loaded but failed during vector indexing. BM25 indexing also skipped.")
-                else:
-                    logger.warning("No processable chunks generated from documents. Indexing skipped.")
-                    st.warning("No processable content found after loading all uploaded documents. Indexing skipped.")
-        elif not st.session_state.uploaded_filenames and uploaded_files:
-            logger.warning("Files were uploaded, but none could be successfully processed.")
-            st.warning("Although files were uploaded, none could be successfully processed. Please check file formats and content.")
+                st.session_state.uploaded_filenames = successfully_loaded_filenames
+
+                if all_raw_docs_for_session:
+                    st.session_state.raw_documents = all_raw_docs_for_session
+                    logger.info(f"Total {len(all_raw_docs_for_session)} raw documents collected from {len(successfully_loaded_filenames)} files.")
+
+                    with st.spinner(f"Chunking, classifying, and indexing {len(st.session_state.uploaded_filenames)} document(s)..."):
+                        logger.debug("Starting document chunking and classification.")
+                        general_context_chunks, requirements_chunks, _ = chunk_documents(
+                            st.session_state.raw_documents, classify=True
+                        )
+
+                        total_chunks = len(general_context_chunks) + len(requirements_chunks)
+                        if total_chunks > 0:
+                            st.success(
+                                f"Document chunking and classification complete. Found "
+                                f"{len(general_context_chunks)} general context chunks and "
+                                f"{len(requirements_chunks)} requirements chunks."
+                            )
+                            logger.info(f"{total_chunks} total chunks created.")
+
+                            indexing_succeeded = True
+
+                            if general_context_chunks:
+                                st.session_state.general_context_chunks = general_context_chunks
+                                logger.debug("Starting indexing of general context chunks.")
+                                if not index_documents(
+                                    general_context_chunks,
+                                    vector_db=st.session_state.GENERAL_VECTOR_DB,
+                                ):
+                                    indexing_succeeded = False
+                                else:
+                                    logger.info(f"{len(general_context_chunks)} general context chunks indexed.")
+                                    st.info(
+                                        f"ℹ️ {len(general_context_chunks)} chunks have been added to the session's persistent memory."
+                                    )
+
+                            if requirements_chunks:
+                                st.session_state.requirements_chunks = requirements_chunks
+                                logger.debug("Starting indexing of requirements chunks.")
+                                if not index_documents(
+                                    requirements_chunks,
+                                    vector_db=st.session_state.DOCUMENT_VECTOR_DB,
+                                ):
+                                    indexing_succeeded = False
+                                else:
+                                    logger.info(f"{len(requirements_chunks)} requirements chunks indexed.")
+
+                            if indexing_succeeded:
+                                st.session_state.document_processed = True
+                                logger.info("Vector indexing successful for one or both chunk types.")
+                                try:
+                                    logger.debug("Starting BM25 indexing on requirements chunks.")
+                                    corpus_texts = [chunk.page_content for chunk in requirements_chunks]
+                                    if corpus_texts:
+                                        tokenized_corpus = [doc.lower().split(" ") for doc in corpus_texts]
+                                        st.session_state.bm25_index = BM25Okapi(tokenized_corpus)
+                                        st.session_state.bm25_corpus_chunks = requirements_chunks
+                                        display_filenames = ", ".join(st.session_state.uploaded_filenames)
+                                        logger.info(f"BM25 index created for documents: {display_filenames}")
+                                        st.success(f"✅ Documents ({display_filenames}) processed and indexed successfully!")
+                                        log_ui_event_to_api(
+                                            "documents_processed",
+                                            {
+                                                "filenames": st.session_state.uploaded_filenames,
+                                                "num_general_chunks": len(general_context_chunks),
+                                                "num_requirements_chunks": len(requirements_chunks),
+                                            },
+                                        )
+                                    else:
+                                        logger.info("No requirements chunks to index for BM25.")
+                                        st.success(
+                                            "✅ Documents processed. No specific requirements chunks found for keyword search indexing."
+                                        )
+                                except Exception as e:
+                                    display_filenames = ", ".join(st.session_state.uploaded_filenames)
+                                    logger.exception(
+                                        f"Failed to create BM25 index for documents ({display_filenames})."
+                                    )
+                                    st.error(
+                                        f"Failed to create BM25 index for documents ({display_filenames}). "
+                                        f"Vector indexing may still be active. Details: {e}"
+                                    )
+                            else:
+                                st.session_state.document_processed = False
+                                display_filenames = ", ".join(st.session_state.uploaded_filenames)
+                                logger.error(
+                                    f"Vector indexing failed for documents ({display_filenames}). BM25 indexing skipped."
+                                )
+                                st.error(
+                                    f"Documents ({display_filenames}) loaded but failed during vector indexing. "
+                                    "BM25 indexing also skipped."
+                                )
+                        else:
+                            st.session_state.document_processed = False
+                            logger.warning("No processable chunks generated from documents. Indexing skipped.")
+                            st.warning("No processable content found after loading all uploaded documents. Indexing skipped.")
+                elif not st.session_state.uploaded_filenames and uploaded_files:
+                    st.session_state.document_processed = False
+                    logger.warning("Files were uploaded, but none could be successfully processed.")
+                    st.warning(
+                        "Although files were uploaded, none could be successfully processed. "
+                        "Please check file formats and content."
+                    )
+
+                # Commit the dedup key only after the pipeline runs to completion.
+                # If a Streamlit rerun interrupts processing above, RerunException
+                # skips this line so the next run retries instead of getting
+                # permanently stuck on "Skipping reprocessing" with no Generate
+                # Requirements button.
+                st.session_state.processed_files_info = processed_files_info
+                st.session_state.uploaded_filenames = list(processed_files_info.keys())
+            finally:
+                st.session_state.document_upload_in_progress = False
     else:
         logger.info("Uploaded files are the same as the ones already processed. Skipping reprocessing.")
 
 
-if st.session_state.get("uploaded_filenames") and st.session_state.get(
-    "document_processed"
-):
+if should_show_processed_documents_banner(uploaded_files):
     st.markdown("---")
-    st.markdown(f"**Successfully processed document(s):**")
-    for name in st.session_state.uploaded_filenames:
+    st.markdown("**Successfully processed document(s):**")
+    for name in get_processed_document_names():
         st.markdown(f"- _{name}_")
     st.markdown("---")
 

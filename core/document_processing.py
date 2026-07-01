@@ -1,5 +1,6 @@
 import os
 import re
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 import streamlit as st
 from langchain_community.document_loaders import PDFPlumberLoader
@@ -17,9 +18,13 @@ from .config import (
     TOKENIZER_LOCAL_PATH,
     TOKENIZER_MODEL_NAME,
 )
+from .heading_cleanup import (
+    extract_toc_lines, build_toc_set,                      # ToC
+    clean_heading_nodes,                                   # cleanup
+    build_toc_index, expand_headings_with_parents,         # parents
+)
 
 # Docling imports
-from docling.document_converter import DocumentConverter
 from docling.chunking import HybridChunker
 from docling_core.transforms.chunker.tokenizer.huggingface import HuggingFaceTokenizer
 from docling_core.types import DoclingDocument
@@ -28,6 +33,9 @@ from transformers import AutoTokenizer
 from urllib.parse import unquote, urlparse
 
 logger = get_logger(__name__)
+
+# Parallel Ollama calls during chunk classification; keep modest to avoid overloading.
+_CLASSIFY_MAX_WORKERS = 4
 
 
 def _resolve_max_tokens(tokenizer) -> int:
@@ -102,14 +110,63 @@ def _split_text_blocks(text: str) -> list[str]:
 
 def _build_docling_document_from_text(text_blocks: list[str], document_name: str) -> DoclingDocument:
     """
-    Build a minimal DoclingDocument from extracted text blocks to avoid
-    requiring PDF layout models when running offline.
+    Build a minimal DoclingDocument from extracted text blocks. Used as a
+    fallback when native Docling conversion is unavailable (e.g. the source file
+    is not on disk). Note: this produces TEXT-only items with no SECTION_HEADER
+    structure, so chunks built from it carry no heading hierarchy.
     """
     doc = DoclingDocument(name=document_name or "document")
     for block in text_blocks:
         for paragraph in _split_text_blocks(block):
             doc.add_text(label=DocItemLabel.TEXT, text=paragraph)
     return doc
+
+
+# Cache Docling converters so layout models are loaded at most once per process.
+_DOCLING_CONVERTERS: dict[bool, object] = {}
+
+
+def _get_docling_converter(is_pdf: bool):
+    """
+    Return a cached Docling DocumentConverter. For PDFs, OCR and table-structure
+    detection are disabled: the structural (heading) information needed for the
+    requirements hierarchy is recovered from the layout model alone, while
+    skipping the expensive OCR pass that previously made processing hang.
+    """
+    if is_pdf not in _DOCLING_CONVERTERS:
+        from docling.document_converter import DocumentConverter
+
+        if is_pdf:
+            from docling.datamodel.base_models import InputFormat
+            from docling.datamodel.pipeline_options import PdfPipelineOptions
+            from docling.document_converter import PdfFormatOption
+
+            pdf_options = PdfPipelineOptions()
+            pdf_options.do_ocr = False
+            pdf_options.do_table_structure = False
+            _DOCLING_CONVERTERS[is_pdf] = DocumentConverter(
+                format_options={InputFormat.PDF: PdfFormatOption(pipeline_options=pdf_options)}
+            )
+        else:
+            _DOCLING_CONVERTERS[is_pdf] = DocumentConverter()
+    return _DOCLING_CONVERTERS[is_pdf]
+
+
+def _convert_with_docling(full_path: str, is_pdf: bool):
+    """
+    Run Docling's native conversion to obtain a DoclingDocument that preserves
+    SECTION_HEADER structure. Returns None on failure so callers can fall back
+    to the text-only document builder.
+    """
+    try:
+        converter = _get_docling_converter(is_pdf)
+        return converter.convert(source=full_path).document
+    except Exception as exc:
+        logger.warning(
+            f"Native Docling conversion failed for '{full_path}': {exc}. "
+            "Falling back to text-only document (headings will be unavailable)."
+        )
+        return None
 
 
 def _normalize_source_path(source_path: str) -> str:
@@ -252,7 +309,6 @@ def chunk_documents(raw_documents, storage_path=PDF_STORAGE_PATH, classify=False
     logger.info(f"Starting Docling hybrid chunking on {len(raw_documents)} document(s).")
 
     try:
-        converter = DocumentConverter()
         tokenizer = _load_docling_tokenizer()
         if tokenizer is None:
             return [], [], []
@@ -264,6 +320,7 @@ def chunk_documents(raw_documents, storage_path=PDF_STORAGE_PATH, classify=False
         general_context_chunks = []
         requirements_chunks = []
         processed_chunk_texts = set()
+        chunks_pending_classification: list[tuple[str, list, dict]] = []
 
         docs_by_source: dict[str, list[LangchainDocument]] = {}
         for doc in raw_documents:
@@ -277,23 +334,52 @@ def chunk_documents(raw_documents, storage_path=PDF_STORAGE_PATH, classify=False
             normalized_source = _normalize_source_path(source_path)
             is_pdf_source = _is_pdf_source(source_path, source_docs, normalized_source)
 
-            if is_pdf_source:
-                text_blocks = [d.page_content for d in source_docs if d.page_content and d.page_content.strip()]
-                if not text_blocks:
-                    logger.warning(f"No extractable text found for PDF '{source_path}'.")
-                    continue
-                doc_name = Path(normalized_source or source_path).stem or "document"
+            text_blocks = [
+                d.page_content for d in source_docs if d.page_content and d.page_content.strip()
+            ]
+            if not text_blocks:
+                logger.warning(f"No extractable text found for '{source_path}'.")
+                continue
+
+            doc_name = Path(normalized_source or source_path).stem or "document"
+
+            # Resolve the on-disk path once; it drives both native conversion and
+            # (for PDFs) ToC extraction.
+            full_path = normalized_source or source_path
+            if not os.path.exists(full_path):
+                logger.warning(
+                    f"Source path '{full_path}' not found. Attempting to resolve with storage path '{storage_path}'."
+                )
+                full_path = os.path.join(storage_path, os.path.basename(source_path))
+
+            # Prefer Docling's native conversion so SECTION_HEADER structure (and
+            # therefore the heading hierarchy that drives the requirements
+            # workbook indentation) is preserved. Fall back to a text-only
+            # document only when the file isn't on disk or conversion fails.
+            dl_doc = None
+            if os.path.exists(full_path):
+                dl_doc = _convert_with_docling(full_path, is_pdf_source)
+            if dl_doc is None:
                 dl_doc = _build_docling_document_from_text(text_blocks, doc_name)
-            else:
-                full_path = normalized_source or source_path
-                if not os.path.exists(full_path):
-                    logger.warning(
-                        f"Source path '{full_path}' not found. Attempting to resolve with storage path '{storage_path}'."
+
+            # PDF-only: extract the ToC and build a number->heading index for parent
+            # reconstruction, and drop running headers/footers and false headings.
+            toc_index = {}
+            if is_pdf_source:
+                if os.path.exists(full_path):
+                    toc_lines = extract_toc_lines(full_path)
+                    toc_set = build_toc_set(toc_lines)
+                    dl_doc, cleanup_stats = clean_heading_nodes(dl_doc, toc_set)
+                    toc_index = build_toc_index(toc_lines)
+                    logger.info(
+                        f"PDF '{os.path.basename(full_path)}': cleanup removed "
+                        f"{cleanup_stats.get('total_removed', 0)}, {len(toc_lines)} ToC lines "
+                        f"-> {len(toc_index)} indexed for parent reconstruction."
                     )
-                    full_path = os.path.join(storage_path, os.path.basename(source_path))
-                    if not os.path.exists(full_path):
-                        raise FileNotFoundError(f"Resolved file path does not exist: {full_path}")
-                dl_doc = converter.convert(source=full_path).document
+                else:
+                    logger.warning(
+                        f"PDF path '{full_path}' not found; skipping ToC-based heading expansion."
+                    )
 
             chunks = list(chunker.chunk(dl_doc))
             logger.info(f"Number of chunks before deduplication: {len(chunks)}")
@@ -305,32 +391,57 @@ def chunk_documents(raw_documents, storage_path=PDF_STORAGE_PATH, classify=False
 
                 processed_chunk_texts.add(chunk_text)
 
+                # For PDFs, expand a numbered leaf heading into its full ancestor
+                # chain. The ToC index (when PyMuPDF is available) supplies real
+                # parent titles; otherwise depth is still reconstructed from the
+                # leaf's section number so indentation is preserved. For non-PDFs,
+                # the chunker already provides the full heading chain.
+                headings = list(c.meta.headings) if c.meta.headings else []
+                if is_pdf_source and headings:
+                    headings = expand_headings_with_parents(headings, toc_index)
+
                 if classify:
-                    language_model = get_language_model()
-                    classification = classify_chunk(language_model, chunk_text)
-                    print(f"--- Chunk {i+1} ---")
-                    print(f"Classification: {classification}")
-                    print(f"Text: {chunk_text}")
-                    print("--------------------")
-                    if classification == "General Context":
-                        general_context_chunks.append(
-                            LangchainDocument(
-                                page_content=chunk_text,
-                                metadata={**doc_metadata, "headings": c.meta.headings, "in_memory": True},
-                            )
-                        )
-                    else:
-                        requirements_chunks.append(
-                            LangchainDocument(
-                                page_content=chunk_text,
-                                metadata={**doc_metadata, "headings": c.meta.headings, "in_memory": False},
-                            )
-                        )
+                    chunks_pending_classification.append((chunk_text, headings, doc_metadata))
                 else:
                     all_chunks.append(
                         LangchainDocument(
                             page_content=chunk_text,
-                            metadata={**doc_metadata, "headings": c.meta.headings, "in_memory": False},
+                            metadata={**doc_metadata, "headings": headings, "in_memory": False},
+                        )
+                    )
+
+        if classify and chunks_pending_classification:
+            language_model = get_language_model()
+            if language_model is None:
+                logger.error("Language model unavailable; cannot classify document chunks.")
+                st.error("Language model unavailable; cannot classify document chunks.")
+                return [], [], []
+
+            def _classify_one(item: tuple[str, list, dict]):
+                chunk_text, headings, doc_metadata = item
+                classification = classify_chunk(language_model, chunk_text)
+                return chunk_text, headings, doc_metadata, classification
+
+            workers = min(_CLASSIFY_MAX_WORKERS, len(chunks_pending_classification))
+            logger.info(
+                f"Classifying {len(chunks_pending_classification)} chunk(s) with {workers} worker(s)."
+            )
+            with ThreadPoolExecutor(max_workers=workers) as executor:
+                classified = list(executor.map(_classify_one, chunks_pending_classification))
+
+            for chunk_text, headings, doc_metadata, classification in classified:
+                if classification == "General Context":
+                    general_context_chunks.append(
+                        LangchainDocument(
+                            page_content=chunk_text,
+                            metadata={**doc_metadata, "headings": headings, "in_memory": True},
+                        )
+                    )
+                else:
+                    requirements_chunks.append(
+                        LangchainDocument(
+                            page_content=chunk_text,
+                            metadata={**doc_metadata, "headings": headings, "in_memory": False},
                         )
                     )
 
@@ -353,19 +464,19 @@ def index_documents(document_chunks, vector_db=None):
     if not document_chunks:
         logger.warning("index_documents called with no chunks to index.")
         st.warning("No document chunks available to index.")
-        return
+        return False
     logger.info(f"Indexing {len(document_chunks)} document chunks.")
     try:
         if vector_db is None:
             vector_db = st.session_state.DOCUMENT_VECTOR_DB
         vector_db.add_documents(document_chunks)
-        st.session_state.document_processed = True
         logger.info("Document chunks indexed successfully into vector store.")
+        return True
     except Exception as e:
         user_message = "An error occurred while indexing document chunks."
         logger.exception(f"{user_message} Details: {e}")
         st.error(f"{user_message} Check logs for details.")
-        st.session_state.document_processed = False
+        return False
 
 
 def re_index_documents_from_session():

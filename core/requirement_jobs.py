@@ -17,7 +17,9 @@ from .database import (
     list_requirement_jobs as db_list_requirement_jobs,
 )
 from .generation import generate_requirements_json, generate_excel_file, parse_requirements_payload
+from .heading_cleanup import headings_before_first_numbered, is_numbered_heading
 from .logger_config import get_logger
+from core.jama_hierarchy import build_hierarchy_workbook_bytes
 
 logger = get_logger(__name__)
 OUTPUT_ROOT = Path(REQUIREMENTS_OUTPUT_PATH)
@@ -41,6 +43,10 @@ class RequirementJobManager:
             if cls._instance is None:
                 cls._instance = cls()
             return cls._instance
+
+    def active_job_ids(self) -> set:
+        """Job ids with a live worker future in THIS process."""
+        return set(self._active_jobs.keys())
 
     def submit_generation_job(
         self,
@@ -104,9 +110,43 @@ class RequirementJobManager:
             tokenized_paragraphs = [_tokenize_text(p) for p in general_paragraphs] if general_paragraphs else []
             bm25 = BM25Okapi(tokenized_paragraphs) if tokenized_paragraphs else None
 
+            # Determine front-matter headings (those before the first numbered
+            # heading) from the union of all chunk heading paths, so we can skip
+            # chunks that belong to front matter (cover, foreword, ToC, etc.).
+            all_headings_ordered = []
+            seen_h = set()
+            for chunk in requirements_chunks:
+                for h in (getattr(chunk, "metadata", {}) or {}).get("headings") or []:
+                    if h not in seen_h:
+                        seen_h.add(h)
+                        all_headings_ordered.append(h)
+            pre_numbered = set(headings_before_first_numbered(all_headings_ordered))
+            # Only treat headings as front matter when the document actually has
+            # numbered sections. With native Docling conversion every chunk shares
+            # a non-numbered document-title root, and unnumbered documents would
+            # otherwise have *every* heading classified as front matter.
+            has_numbered_sections = any(
+                is_numbered_heading(h) for h in all_headings_ordered
+            )
+
             verif_chars = len(verification_context_all)
             requirements_payload = []
+            chunk_results = []   # list of (headings_path, parsed_requirements)
+            skipped_front_matter = 0
+
             for chunk in requirements_chunks:
+                headings_path = (getattr(chunk, "metadata", {}) or {}).get("headings") or []
+
+                # Skip front-matter chunks. A chunk is front matter when its
+                # deepest (leaf) heading is one of the pre-numbered front-matter
+                # sections (cover, approvals, ToC, etc.). Checking the leaf rather
+                # than the root avoids misclassifying real requirement chunks that
+                # share a non-numbered document-title root.
+                leaf_heading = headings_path[-1] if headings_path else ""
+                if has_numbered_sections and leaf_heading in pre_numbered:
+                    skipped_front_matter += 1
+                    continue
+
                 chunk_text = getattr(chunk, "page_content", "") or ""
                 general_context_selected = ""
                 if bm25 and chunk_text.strip():
@@ -141,9 +181,27 @@ class RequirementJobManager:
                     general_context=general_context_selected,
                 )
                 requirements_payload.append(json_response)
+                # Pair each parsed requirement group with its heading path so the
+                # hierarchy workbook can indent it under the right section.
+                chunk_results.append(
+                    (headings_path, parse_requirements_payload([json_response]))
+                )
 
-            excel_bytes = generate_excel_file(requirements_payload)
-            parsed_requirements = parse_requirements_payload(requirements_payload)
+            logger.info(
+                "Job %s: processed %d chunk(s), skipped %d front-matter chunk(s).",
+                job_id,
+                len(chunk_results),
+                skipped_front_matter,
+            )
+
+            # Build the indented Jama hierarchy workbook from (headings, reqs) pairs.
+            excel_bytes = build_hierarchy_workbook_bytes(chunk_results)
+            parsed_requirements = [
+                req for _, reqs in chunk_results for req in (reqs or [])
+            ]
+
+            # excel_bytes = generate_excel_file(requirements_payload)
+            # parsed_requirements = parse_requirements_payload(requirements_payload)
             if not excel_bytes or not parsed_requirements:
                 raise ValueError("Requirement generation produced no usable data.")
 
@@ -216,6 +274,39 @@ def _tokenize_text(text: str) -> List[str]:
 # Convenience exports
 def submit_requirement_generation_job(**kwargs) -> str:
     return RequirementJobManager.instance().submit_generation_job(**kwargs)
+
+
+def is_job_active(job_id: str) -> bool:
+    """True if the job has a live worker future in the current process."""
+    if not job_id:
+        return False
+    return job_id in RequirementJobManager.instance().active_job_ids()
+
+
+def reconcile_stale_jobs(user_id: int) -> int:
+    """Mark jobs left in 'queued'/'running' by a previous (now-dead) process as failed.
+
+    Requirement jobs run inside the Streamlit process via an in-memory thread pool.
+    If the process is restarted while a job is in flight, the DB row stays 'running'
+    forever even though no worker exists. The UI then polls that status on a 3s loop
+    indefinitely. Here we detect such rows (queued/running but with no live worker in
+    THIS process) and fail them so the UI stops polling. Returns the count reconciled.
+    """
+    if not user_id:
+        return 0
+    active = RequirementJobManager.instance().active_job_ids()
+    reconciled = 0
+    for job in db_list_requirement_jobs(user_id, limit=50):
+        if job.get("status") in {"queued", "running"} and job.get("id") not in active:
+            update_requirement_job(
+                job["id"],
+                status="failed",
+                error_message="Job was interrupted (application restarted before it finished). Please run it again.",
+            )
+            reconciled += 1
+    if reconciled:
+        logger.info("Reconciled %d stale requirement job(s) for user %s.", reconciled, user_id)
+    return reconciled
 
 
 def get_requirement_job(job_id: str):
