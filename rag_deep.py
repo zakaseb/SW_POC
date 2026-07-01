@@ -60,7 +60,6 @@ from core.requirement_jobs import (
     load_job_excel_bytes,
     load_job_requirements,
     reconcile_stale_jobs,
-    is_job_active,
 )
 
 from core.config import USE_API_WRAPPER, API_URL
@@ -171,10 +170,6 @@ def refresh_requirement_job_state():
     if not user_id:
         return
 
-    # Fail any job left 'queued'/'running' by a previous process so the UI does not
-    # poll a dead job forever (which would reload the page every few seconds).
-    reconcile_stale_jobs(user_id)
-
     latest_job = get_latest_requirement_job(user_id)
     previous_job_id = st.session_state.get("latest_requirement_job_id")
     latest_job_id = latest_job.get("id") if latest_job else None
@@ -208,16 +203,10 @@ def refresh_requirement_job_state():
 
 
 def schedule_job_status_refresh():
-    """Auto-refresh the UI while a requirement job is actively running.
-
-    Only polls jobs that have a live worker in this process. A job marked
-    'running' in the DB without a live worker (e.g. left over from a previous
-    process) is never polled here, preventing an endless 3s reload loop.
-    """
+    """Auto-refresh the UI while a requirement job is running."""
     job_info = st.session_state.get("latest_requirement_job")
     status = job_info.get("status") if job_info else None
-    job_id = job_info.get("id") if job_info else None
-    if status in {"queued", "running"} and is_job_active(job_id):
+    if status in {"queued", "running"}:
         time.sleep(JOB_STATUS_POLL_SECONDS)
         st.rerun()
 
@@ -323,6 +312,15 @@ if (st.session_state.get("authenticated")
     index_global_context_once(ctx_path)
     st.session_state["did_context_bootstrap"] = True
     st.session_state["context_document_loaded"] = True
+
+# Fail any jobs left in 'queued'/'running' by a previous (now-dead) process once
+# per session. Otherwise the UI polls their status on an endless ~3s rerun loop,
+# which wipes transient upload banners and can interrupt document processing.
+if (st.session_state.get("authenticated")
+    and st.session_state.get("user_id")
+    and not st.session_state.get("stale_jobs_reconciled")):
+    reconcile_stale_jobs(st.session_state.user_id)
+    st.session_state["stale_jobs_reconciled"] = True
 
 # Keep requirement job state in sync for authenticated users
 if st.session_state.get("authenticated") and st.session_state.get("user_id"):
@@ -521,7 +519,6 @@ if uploaded_files:
                             logger.error(f"Failed to save '{filename}'.")
 
                 st.session_state.uploaded_filenames = successfully_loaded_filenames
-                st.session_state.processed_files_info = processed_files_info
 
                 if all_raw_docs_for_session:
                     st.session_state.raw_documents = all_raw_docs_for_session
@@ -625,6 +622,13 @@ if uploaded_files:
                         "Although files were uploaded, none could be successfully processed. "
                         "Please check file formats and content."
                     )
+
+                # Commit the dedup key only after the pipeline runs to completion.
+                # If a Streamlit rerun interrupts processing above, RerunException
+                # skips this line so the next run retries instead of getting
+                # permanently stuck on "Skipping reprocessing" with no Generate
+                # Requirements button.
+                st.session_state.processed_files_info = processed_files_info
             finally:
                 st.session_state.document_upload_in_progress = False
     else:

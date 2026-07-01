@@ -170,7 +170,7 @@ Classification:
 
 # ========== Hard defaults (no env required) ==========
 # Models
-OLLAMA_EMBEDDING_MODEL_NAME = "mistral:7b"  
+OLLAMA_EMBEDDING_MODEL_NAME = "nomic-embed-text:latest"
 OLLAMA_LLM_NAME             = "mistral:7b"
 RERANKER_MODEL_NAME         = "cross-encoder/ms-marco-MiniLM-L-6-v2"
 # Local HF cache + offline guardrails
