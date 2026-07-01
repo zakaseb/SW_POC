@@ -18,6 +18,7 @@ from .database import (
 )
 from .generation import generate_requirements_json, generate_excel_file, parse_requirements_payload
 from .heading_cleanup import headings_before_first_numbered, is_numbered_heading
+from .source_matching import best_source_sentence
 from .logger_config import get_logger
 from core.jama_hierarchy import build_hierarchy_workbook_bytes
 
@@ -183,9 +184,20 @@ class RequirementJobManager:
                 requirements_payload.append(json_response)
                 # Pair each parsed requirement group with its heading path so the
                 # hierarchy workbook can indent it under the right section.
-                chunk_results.append(
-                    (headings_path, parse_requirements_payload([json_response]))
-                )
+                parsed_chunk_reqs = parse_requirements_payload([json_response])
+                # Trace every requirement back to the exact chunk and sentence it
+                # was extracted from. Duplication across rows is expected: several
+                # requirements may originate from the same chunk/sentence.
+                for req in parsed_chunk_reqs:
+                    if not isinstance(req, dict):
+                        continue
+                    source_sentence, conf_score = best_source_sentence(
+                        req.get("Description", ""), chunk_text
+                    )
+                    req["source_chunk"] = chunk_text
+                    req["source_sentence"] = source_sentence
+                    req["conf_score"] = conf_score
+                chunk_results.append((headings_path, parsed_chunk_reqs))
 
             logger.info(
                 "Job %s: processed %d chunk(s), skipped %d front-matter chunk(s).",
