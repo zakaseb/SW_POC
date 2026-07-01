@@ -149,3 +149,38 @@ def reset_document_states(clear_chat=True):
 def reset_file_uploader():
     """Increments the key for the file uploader to reset it."""
     st.session_state.uploaded_file_key += 1
+
+
+def uploaded_files_fingerprint(uploaded_files) -> dict:
+    """Map uploaded widget files to the {name: size} dedup fingerprint."""
+    if not uploaded_files:
+        return {}
+    return {f.name: f.size for f in uploaded_files}
+
+
+def should_show_processed_documents_banner(uploaded_files) -> bool:
+    """
+    Return True when the UI should list successfully processed documents.
+
+    Hide the banner while the file uploader holds a different set of files than
+    what is already processed, so a stale prior filename is not shown after the
+    user selects a new upload.
+    """
+    if not st.session_state.get("document_processed"):
+        return False
+
+    processed = st.session_state.get("processed_files_info") or {}
+    if not processed:
+        return False
+
+    current = uploaded_files_fingerprint(uploaded_files)
+    if current and current != processed:
+        return False
+
+    return True
+
+
+def get_processed_document_names() -> list[str]:
+    """Filenames that completed processing, in stable display order."""
+    processed = st.session_state.get("processed_files_info") or {}
+    return sorted(processed.keys())

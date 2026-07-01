@@ -22,28 +22,34 @@ def _run_upload_once(session_state, uploaded_files, interrupt_during_processing=
     current_uploaded_files_info = {f.name: f.size for f in uploaded_files}
 
     if current_uploaded_files_info != session_state.get("processed_files_info", {}):
+        processed_snapshot = session_state.get("processed_files_info") or {}
         if session_state.get("document_upload_in_progress"):
-            return "in_progress"
-        session_state["document_upload_in_progress"] = True
-        reset_document_states(clear_chat=True)
-        try:
-            session_state["uploaded_filenames"] = [f.name for f in uploaded_files]
-
-            if interrupt_during_processing:
-                # Emulate a Streamlit rerun firing mid-processing (e.g. the job
-                # poll loop). RerunException is raised before the pipeline and the
-                # dedup-key commit complete.
-                raise _Rerun()
-
-            session_state["general_context_chunks"] = [LangchainDocument(page_content="general")]
-            session_state["requirements_chunks"] = [LangchainDocument(page_content="requirement")]
-            session_state["document_processed"] = True
-
-            # Commit dedup key ONLY after the pipeline completes.
-            session_state["processed_files_info"] = current_uploaded_files_info
-            return "processed"
-        finally:
+            if not processed_snapshot:
+                return "in_progress"
             session_state["document_upload_in_progress"] = False
+
+        if not session_state.get("document_upload_in_progress"):
+            session_state["document_upload_in_progress"] = True
+            reset_document_states(clear_chat=True)
+            try:
+                session_state["uploaded_filenames"] = [f.name for f in uploaded_files]
+
+                if interrupt_during_processing:
+                    # Emulate a Streamlit rerun firing mid-processing (e.g. the job
+                    # poll loop). RerunException is raised before the pipeline and the
+                    # dedup-key commit complete.
+                    raise _Rerun()
+
+                session_state["general_context_chunks"] = [LangchainDocument(page_content="general")]
+                session_state["requirements_chunks"] = [LangchainDocument(page_content="requirement")]
+                session_state["document_processed"] = True
+
+                # Commit dedup key ONLY after the pipeline completes.
+                session_state["processed_files_info"] = current_uploaded_files_info
+                session_state["uploaded_filenames"] = list(current_uploaded_files_info.keys())
+                return "processed"
+            finally:
+                session_state["document_upload_in_progress"] = False
     return "skipped"
 
 
@@ -123,3 +129,47 @@ def test_empty_uploader_on_rerun_does_not_clear_processed_state():
 
     assert session_state["document_processed"] is True
     assert session_state["processed_files_info"] == {"spec.pdf": 1234}
+
+
+def test_stale_banner_hidden_when_uploader_has_different_files():
+    """Do not show the prior document name while a new upload is selected."""
+    from unittest.mock import patch
+    from core.session_manager import should_show_processed_documents_banner, get_processed_document_names
+
+    session_state = {
+        "document_processed": True,
+        "processed_files_info": {"A1001-51000-115-000-02.pdf": 5635217},
+        "uploaded_filenames": ["A1001-51000-115-000-02.pdf"],
+    }
+
+    old_upload = [MagicMock(size=5635217)]
+    old_upload[0].name = "A1001-51000-115-000-02.pdf"
+    new_upload = [MagicMock(size=1312019)]
+    new_upload[0].name = "pids_ds-siu_2_short.docx"
+
+    with patch("core.session_manager.st.session_state", session_state):
+        assert should_show_processed_documents_banner(old_upload) is True
+        assert should_show_processed_documents_banner(new_upload) is False
+        assert should_show_processed_documents_banner([]) is True
+        assert get_processed_document_names() == ["A1001-51000-115-000-02.pdf"]
+
+
+def test_new_upload_clears_stale_in_progress_guard():
+    """A different file in the uploader must not be blocked by a stale in_progress flag."""
+    session_state = {
+        "processed_files_info": {"A1001-51000-115-000-02.pdf": 100},
+        "document_upload_in_progress": True,
+        "document_processed": True,
+        "uploaded_filenames": ["A1001-51000-115-000-02.pdf"],
+        "uploaded_file_key": 0,
+    }
+
+    new_file = [MagicMock(size=200)]
+    new_file[0].name = "pids_ds-siu_2_short.docx"
+
+    with patch("core.session_manager.get_embedding_model", return_value=MagicMock()):
+        result = _run_upload_once(session_state, new_file)
+        assert result == "processed"
+        assert session_state["processed_files_info"] == {"pids_ds-siu_2_short.docx": 200}
+        assert session_state["uploaded_filenames"] == ["pids_ds-siu_2_short.docx"]
+        assert session_state["document_upload_in_progress"] is False

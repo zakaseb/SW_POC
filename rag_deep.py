@@ -49,6 +49,9 @@ from core.session_manager import (
     reset_document_states,
     reset_file_uploader,
     purge_persistent_memory,
+    should_show_processed_documents_banner,
+    get_processed_document_names,
+    uploaded_files_fingerprint,
 )
 from core.database import save_session
 from core.session_utils import package_session_for_storage
@@ -474,7 +477,7 @@ uploaded_files = st.file_uploader(
 )
 
 if uploaded_files:
-    current_uploaded_files_info = {f.name: f.size for f in uploaded_files}
+    current_uploaded_files_info = uploaded_files_fingerprint(uploaded_files)
     logger.info(f"Files uploaded: {list(current_uploaded_files_info.keys())}")
 
     log_ui_event_to_api(
@@ -484,9 +487,18 @@ if uploaded_files:
 
     # Check if the uploaded files are the same as the ones already processed
     if current_uploaded_files_info != st.session_state.get("processed_files_info", {}):
+        processed_snapshot = st.session_state.get("processed_files_info") or {}
+        # Block only when the same in-flight upload is being retried on a rerun
+        # (processed was cleared by reset, so the snapshot is empty). If the
+        # uploader now holds a different file than what is already processed,
+        # clear a stale in_progress flag and start fresh.
         if st.session_state.get("document_upload_in_progress"):
-            st.info("Document processing is already in progress. Please wait...")
-        else:
+            if not processed_snapshot:
+                st.info("Document processing is already in progress. Please wait...")
+            else:
+                st.session_state.document_upload_in_progress = False
+
+        if not st.session_state.get("document_upload_in_progress"):
             st.session_state.document_upload_in_progress = True
             logger.info("New set of files detected. Resetting document states for reprocessing.")
             reset_document_states(clear_chat=True)
@@ -629,18 +641,17 @@ if uploaded_files:
                 # permanently stuck on "Skipping reprocessing" with no Generate
                 # Requirements button.
                 st.session_state.processed_files_info = processed_files_info
+                st.session_state.uploaded_filenames = list(processed_files_info.keys())
             finally:
                 st.session_state.document_upload_in_progress = False
     else:
         logger.info("Uploaded files are the same as the ones already processed. Skipping reprocessing.")
 
 
-if st.session_state.get("uploaded_filenames") and st.session_state.get(
-    "document_processed"
-):
+if should_show_processed_documents_banner(uploaded_files):
     st.markdown("---")
-    st.markdown(f"**Successfully processed document(s):**")
-    for name in st.session_state.uploaded_filenames:
+    st.markdown("**Successfully processed document(s):**")
+    for name in get_processed_document_names():
         st.markdown(f"- _{name}_")
     st.markdown("---")
 
