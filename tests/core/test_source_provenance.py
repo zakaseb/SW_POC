@@ -100,3 +100,36 @@ def test_hierarchy_section_rows_leave_provenance_blank():
     # Row 2 is the section row.
     assert ws.cell(row=2, column=chunk_col).value in (None, "")
     assert ws.cell(row=2, column=conf_col).value in (None, "")
+
+
+def test_source_sentence_starting_with_equals_is_not_written_as_formula():
+    sentence = "=minimum supply voltage shall be 5 VDC."
+    req = {
+        "Name": "Supply Voltage",
+        "Description": "The system shall provide 5 VDC minimum supply voltage.",
+        "VerificationMethod": "Test",
+        "RequirementType": "Functional",
+        "Tags": "",
+        "DocumentRequirementID": "#99",
+        "source_chunk": sentence,
+        "source_sentence": sentence,
+        "conf_score": 0.88,
+    }
+    chunk_results = [(["4 Requirements", "4.1 Power"], [req])]
+
+    xlsx_bytes = build_hierarchy_workbook_bytes(chunk_results)
+    wb = load_workbook(io.BytesIO(xlsx_bytes))
+    ws = wb["Jama_Hierarchy"]
+
+    sentence_col = COLS.index("source_sentence") + 1
+    id_col = COLS.index("DocumentRequirementID") + 1
+    req_row = next(
+        r for r in range(2, ws.max_row + 1)
+        if ws.cell(row=r, column=id_col).value == "#99"
+    )
+    cell = ws.cell(row=req_row, column=sentence_col)
+
+    assert cell.value == sentence
+    assert cell.data_type == "s"
+    assert cell.data_type != "f"
+
