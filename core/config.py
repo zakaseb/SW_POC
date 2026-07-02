@@ -53,7 +53,7 @@ JSON Schema:
 whereby:
 
 Name: The name of the requirement
-Description: The requirement description
+Description: The requirement description. This has to be a 'shall' statement at all times for every requirement.
 Verification Method: This should be 'Test', 'Inspection' or 'Analysis'. The verification 
    method of each requirement can be identified in table 4-4, where the requirement ID can 
    be mapped to a verification method
