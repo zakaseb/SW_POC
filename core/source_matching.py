@@ -37,6 +37,22 @@ _model_tried = False
 _model_lock = threading.Lock()
 
 
+def sanitize_excel_text(text: str) -> str:
+    """Strip leading ``=`` characters so Excel does not treat cell values as formulas.
+
+    Leading whitespace is ignored first, then any run of leading ``=`` is removed.
+    ``=`` elsewhere in the text is kept.
+    """
+    if not text:
+        return ""
+    if not isinstance(text, str):
+        return str(text)
+    cleaned = text.lstrip()
+    while cleaned.startswith("="):
+        cleaned = cleaned.lstrip("=").lstrip()
+    return cleaned
+
+
 def split_into_sentences(text: str) -> List[str]:
     """Break ``text`` into candidate sentences (line-aware)."""
     if not text or not text.strip():
@@ -150,7 +166,10 @@ def best_source_sentence(
             scores = _lexical_scores(description or "", sentences)
 
     if not scores:
-        return (sentences[0], 0.0)
+        return (sanitize_excel_text(sentences[0]), 0.0)
 
     best_idx = max(range(len(sentences)), key=lambda i: scores[i])
-    return (sentences[best_idx], round(float(scores[best_idx]), 4))
+    return (
+        sanitize_excel_text(sentences[best_idx]),
+        round(float(scores[best_idx]), 4),
+    )

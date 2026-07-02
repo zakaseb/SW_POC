@@ -26,6 +26,8 @@ from openpyxl import Workbook
 from openpyxl.styles import Alignment, Font
 from openpyxl.utils import get_column_letter
 
+from .source_matching import sanitize_excel_text
+
 COLS = [
     "Level",
     "Name",
@@ -45,17 +47,6 @@ HEADER_FONT = Font(name="Arial", size=10, bold=True)
 CENTER      = Alignment(horizontal="center", vertical="center")
 _SEP = r"[\s\u00a0\u200b\u200c\u200d\u2060\ufeff]"
 _SECTION_NUM_RE = re.compile(rf"^\s*\d+(?:\.\d+)*\.?{_SEP}+")
-# Excel treats cells whose text begins with these characters as formulas.
-_EXCEL_FORMULA_PREFIXES = frozenset("=+-@")
-
-
-def _set_safe_cell(ws, row_idx, column, value):
-    """Write a cell value without triggering Excel formula interpretation."""
-    cell = ws.cell(row=row_idx, column=column, value=value)
-    if isinstance(value, str) and value and value[0] in _EXCEL_FORMULA_PREFIXES:
-        cell.data_type = "s"
-    return cell
-
 
 def _tags_to_str(value):
     return ", ".join(value) if isinstance(value, list) else (value or "")
@@ -64,7 +55,7 @@ def _tags_to_str(value):
 def _plain_row(ws, row_idx, values, height=15, indent=0):
     ws.row_dimensions[row_idx].height = height
     for col, val in enumerate(values, start=1):
-        c = _set_safe_cell(ws, row_idx, col, val)
+        c = ws.cell(row=row_idx, column=col, value=val)
         c.font = PLAIN_FONT
         c.alignment = Alignment(
             horizontal="left",
@@ -91,8 +82,8 @@ def _requirement_row(ws, row_idx, level, req):
             req.get("RequirementType", ""),
             _tags_to_str(req.get("Tags", "")),
             req.get("DocumentRequirementID", ""),
-            req.get("source_chunk", ""),
-            req.get("source_sentence", ""),
+            sanitize_excel_text(req.get("source_chunk", "")),
+            sanitize_excel_text(req.get("source_sentence", "")),
             req.get("conf_score", ""),
         ],
         height=30,

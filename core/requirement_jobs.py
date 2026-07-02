@@ -18,7 +18,7 @@ from .database import (
 )
 from .generation import generate_requirements_json, generate_excel_file, parse_requirements_payload
 from .heading_cleanup import headings_before_first_numbered, is_numbered_heading
-from .source_matching import best_source_sentence
+from .source_matching import best_source_sentence, sanitize_excel_text
 from .logger_config import get_logger
 from core.jama_hierarchy import build_hierarchy_workbook_bytes
 
@@ -194,7 +194,7 @@ class RequirementJobManager:
                     source_sentence, conf_score = best_source_sentence(
                         req.get("Description", ""), chunk_text
                     )
-                    req["source_chunk"] = chunk_text
+                    req["source_chunk"] = sanitize_excel_text(chunk_text)
                     req["source_sentence"] = source_sentence
                     req["conf_score"] = conf_score
                 chunk_results.append((headings_path, parsed_chunk_reqs))
