@@ -35,67 +35,69 @@ Answer:
 """
 
 REQUIREMENT_JSON_PROMPT_TEMPLATE = """
-You are an expert system engineer specialized in requirement extraction. Your task is to analyze the provided text chunk and extract all the requirements it contains.
+You are an expert system engineer specialized in requirement extraction. Your task is to analyze the provided text chunk and extract all the requirements CONTAINED IN THAT CHUNK.
 For each requirement found in the text chunk, you must generate a single JSON object that follows the schema below.
 If a chunk contains multiple requirements, generate a list of JSON objects.
 If the chunk contains no requirements, return an empty list [].
 Your response MUST be only the JSON data (a single object or a list of objects) and nothing else. Do not include any prefixes, suffixes, or explanations.
 
+SCOPE: 
+- The Text Chunk is the ONLY source of requirements. 
+- VERIFICATION METHODS REFERENCE, REQUIREMENT TYPE REFERENCE, and GENERAL CONTEXT are READ-ONLY - use them only to fill fields and clarify terms, NEVER as a source of requirements (even if they contain 'shall'). 
+- If the Text Chunk has no requirements, return [].
+
 JSON Schema:
 {{
   "Name": "string",
-  "Description": "string",
-  "VerificationMethod": "string (e.g., Analysis, Inspection, Demonstration, Test)",
-  "Tags": "list of strings",
-  "RequirementType": "string (e.g., Functional, Constraint)",
-  "DocumentRequirementID": "string"
+  "Description": "single EARS 'shall' statement, content drawn from the Text Chunk",
+  "VerificationMethod": "Analysis | Inspection | Test | Demonstration (use VERIFICATION METHODS REFERENCE)",
+  "Tags": ["TBD" if description has TBD/TBC; add "Updated" if rewritten/split per quality rules below],
+  "RequirementType": "Functional Req. | Performance Req. | Interface Req. | Constraint Req. (use REQUIREMENT TYPE REFERENCE)",
+  "DocumentRequirementID": "ID copied verbatim from the chunk if present (e.g. SS_TO_SR-SOI_SYS_REQ-1, SYS_REQ-12, REQ_014), else empty string - never invent one"
 }}
-whereby:
 
-Name: The name of the requirement
-Description: The requirement description. This has to be a 'shall' statement at all times for every requirement.
-Verification Method: This should be 'Test', 'Inspection' or 'Analysis'. The verification 
-   method of each requirement can be identified in table 4-4, where the requirement ID can 
-   be mapped to a verification method
-Tags: In the case where there is a TBD or TBC in the description, add the tag 'TBD' in 
-   this column for a requirement.
-Requirement Type: Please classify the requirement as one of the following - 'Functional', 
-   'Interface' or 'Constraint'
-Document Requirement ID: This should be the unique randomised alphanumerical requirement ID of each requirement.
+QUALITY: Each requirement must be verifiable, autonomous, unambiguous, concise, and a single EARS 'shall' statement. If not, rewrite it to comply, tag 'Updated', and split one overloaded requirement into several if needed.
 
-When extracting the requirements, please ensure that the following are adhered to: 
-1. Requirements are verifiable.
-2. Requirements are autonomous.
-3. Requirements are unambiguous.
-4. Requirements are concise.
+EARS SYNTAX (mandatory, keyword order Where -> While -> When/If-then -> "<system> shall <response>"):
+- Ubiquitous: <system> shall <response>.  e.g. "The control system shall prevent engine overspeed."
+- State-driven (WHILE): While <precondition>, <system> shall <response>.  e.g. "While the aircraft is in-flight, the control system shall maintain fuel flow above 5 lbs/sec."
+- Event-driven (WHEN): When <trigger>, <system> shall <response>.  e.g. "When ignition is commanded, the control system shall switch on continuous ignition."
+- Optional feature (WHERE): Where <feature included>, <system> shall <response>.  e.g. "Where overspeed protection is included, the control system shall test its availability prior to dispatch."
+- Unwanted behaviour (IF/THEN): If <trigger>, then <system> shall <response>.  e.g. "If computed airspeed is unavailable, then the control system shall use modelled airspeed."
+- Complex: combine the above, e.g. "While the aircraft is on the ground, when reverse thrust is commanded, the control system shall enable deployment of the thrust reverser."
 
-In the case where requirements are not meeting the above, please mark them in the 'Tags' 
-column as 'Updated' by adding the word 'Updated' in the Tags column (note: if there is a 
-TBD in the column, then separate them with a comma). Please update the description to adhere 
-to these requirements for the requirements quality. Feel free to split requirements into 
-multiple requirements if so required.
+Rules: name the specific system immediately before 'shall' (never vague 'the system'/'it'); active voice; exactly one 'shall'; at most one trigger; up to 3 preconditions (else split); one-or-more responses. If a requirement is a formula/graphic that can't be cleanly EARS-ified, write the closest 'shall' statement, keep the value, tag 'Updated'.
 
-Here is an example of a desired JSON object:
+Examples of desired JSON objects:
 {{
-  "Name": "Dual-Mode HMI",
-  "Description": "The system shall support dual-mode hmi as per mission profile and design objectives.",
+  "Name": "Torque Setpoint CAN Message",
+  "Description": "When a new torque setpoint is computed, the control system shall transmit CAN message 0x3A2 containing the torque setpoint.",
+  "VerificationMethod": "Test",
+  "Tags": [],
+  "RequirementType": "Interface Req.",
+  "DocumentRequirementID": "SS_TO_SR-SOI_SYS_REQ-1"
+}}
+{{
+  "Name": "ADC Voltage Scaling",
+  "Description": "When an ADC sample is available, the control system shall scale the ADC value by TBD to obtain the measured voltage.",
   "VerificationMethod": "Analysis",
   "Tags": ["TBD"],
-  "RequirementType": "Functional",
-  "DocumentRequirementID": "#177"
+  "RequirementType": "Functional Req.",
+  "DocumentRequirementID": ""
 }}
 
-Now, analyze the following text chunk and extract the requirements.
+Now, analyze the following Text Chunk and extract ONLY the requirements stated in it. Every Description you output MUST be a single EARS 'shall' statement drawn from this Text Chunk.
 
 Text Chunk:
 {document_context}
 
-Additional reference materials you MUST use while generating/validating requirements:
-
-- Verification Methods (fixed offline reference; use this first to determine 'VerificationMethod'):
+VERIFICATION METHODS REFERENCE (read-only):
 {verification_methods_context}
 
-- General Context (persistent knowledge; use this to clarify terms, interfaces, and constraints):
+REQUIREMENT TYPE REFERENCE (read-only):
+{requirement_type_context}
+
+GENERAL CONTEXT (read-only, clarification only - never a requirement source):
 {general_context}
 
 JSON Output:
@@ -126,18 +128,17 @@ You are an expert document analyst. Classify the following text chunk into one o
 1.  **General Context**: Portions of a document that provide broad, high-level information. This includes introductions, overviews, and background information that help a reader understand the overall context of the document, but do not contain specific, detailed requirements.
 2.  **Requirements**: Portions of a document that contain specific, detailed, and actionable requirements, specifications, or instructions. These are the granular details of a project, system, or process. A requirement should be a statement that can be verified or tested.
 
+PRIORITY RULE (apply this first, it overrides everything else):
+If the text chunk contains the word "shall" or "should" (in any casing, as a whole word), classify it as "Requirements" - even if the chunk also looks like introductory or overview text. Only when neither "shall" nor "should" appears should you weigh the chunk against the two category descriptions above.
+
 I will provide below an example of both classes to get a better understanding of the required task. 
-
 An example of the "General Context" class is:
-
 "Introduction:
 This document specifies the technical system requirements for the All-Terrain Military Hybrid Vehicle (ATMHV), translating user needs (as defined in the URS) into detailed, implementable, and verifiable system requirements. The A-Spec outlines functional, performance, interface, design, safety, and verification criteria to guide system development, integration, and testing.
 System Overview:
 The ATMHV is an 8-passenger hybrid-powered vehicle designed for military operations across challenging terrains including deserts, forests, swamps, and snow. The vehicle provides off-road mobility, tactical communication capabilities, protection against threats, and logistics support. It must operate reliably across extreme environmental conditions.
 "
-
 An example of the "Requirements" class is:
-
 "       SS_TO_SR-SOI_SYS_REQ-1
 Maximum Speed Limitation #1
 The system shall support maximum speed limitation #1 as per mission profile and design objectives. 
@@ -166,6 +167,32 @@ Text Chunk:
 {chunk_text}
 
 Classification:
+"""
+
+REQUIREMENT_TYPE_CONTEXT = """Assign exactly one of: Functional Req. | Performance Req. | Interface Req. | Constraint Req.
+
+**Functional Req.** — Describes WHAT the system does: a computation, logic branch, state
+transition, mapping, clamping, fault response, or conditional action.
+  -> Keywords: compute, calculate, set, map, convert, clamp, detect, enable, disable, trigger
+  -> Example: "The system shall scale the ADC value by 0.00488 to obtain voltage."
+
+**Performance Req.** — Describes HOW WELL or HOW OFTEN: a timing bound, rate, frequency,
+accuracy, latency, or throughput. Always contains a numeric value with a unit.
+  -> Keywords: within N ms, at a rate of, every N ms, accuracy of, no more than, maximum
+  -> Example: "The system shall execute the control loop within 1 ms."
+
+**Interface Req.** — Describes interaction with an EXTERNAL ENTITY: CAN, SPI, I2C, UART,
+GPIO, ADC, DMA, register, memory-mapped address, OS API, or another module.
+  -> Keywords: transmit, receive, read from, write to, signal, frame, message, pin, register
+  -> Example: "The system shall transmit CAN message 0x3A2 containing the torque setpoint."
+
+**Constraint Req.** — Imposes a DESIGN RESTRICTION: a coding standard, architectural rule,
+memory policy, or safety mandate — restricts the solution regardless of behavior.
+  -> Keywords: shall comply with, shall not use, MISRA-C, ISO 26262, stack depth, watchdog policy
+  -> Example: "The system shall not use dynamic memory allocation after initialization."
+
+Decision rule: timing/accuracy -> Performance | external bus/signal -> Interface |
+standard/policy -> Constraint | everything else -> Functional
 """
 
 # ========== Hard defaults (no env required) ==========

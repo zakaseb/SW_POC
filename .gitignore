@@ -16,6 +16,9 @@ document_store/generated_requirements/
 #downloaded models
 models/
 
+#Jupyter notebooks
+*.ipynb
+
 # Database
 users.db
 

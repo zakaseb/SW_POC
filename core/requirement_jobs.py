@@ -57,7 +57,7 @@ class RequirementJobManager:
         requirements_chunks: List[Any],
         verification_docs: List[Any],
         general_docs: List[Any],
-        top_k_general: int = 8,
+        top_k_general: int = 3,
         safe_char_cap: int = 32000,
     ) -> str:
         job_id = str(uuid.uuid4())
@@ -101,10 +101,31 @@ class RequirementJobManager:
         update_requirement_job(job_id, status="running")
         try:
             joiner = "\n\n---\n\n"
+
+            def _verification_block(doc) -> str:
+                """Chunk text with its heading path restored in front.
+
+                The HybridChunker stores the heading path in metadata['headings']
+                (not in page_content), so joining page_content alone drops the
+                headings. Re-attach them here so the verification context keeps
+                its section structure.
+                """
+                meta = getattr(doc, "metadata", {}) or {}
+                headings = meta.get("headings") or []
+                text = (getattr(doc, "page_content", "") or "").strip()
+                if headings:
+                    return " > ".join(headings) + "\n" + text
+                return text
+
+            # similarity_search returns chunks in similarity order, not document
+            # order; sort by the chunk_index written at chunking time so the whole
+            # document is reassembled in its original order.
+            verification_docs_ordered = sorted(
+                (d for d in verification_docs if getattr(d, "page_content", None)),
+                key=lambda d: (getattr(d, "metadata", {}) or {}).get("chunk_index", 0),
+            )
             verification_context_all = joiner.join(
-                doc.page_content.strip()
-                for doc in verification_docs
-                if getattr(doc, "page_content", None)
+                _verification_block(d) for d in verification_docs_ordered
             )
 
             general_paragraphs = _prepare_general_paragraphs(general_docs)
@@ -164,7 +185,7 @@ class RequirementJobManager:
                             for idx in ranked_indices
                             if general_paragraphs[idx].strip()
                         ]
-                        general_context_selected = joiner.join(top_general_chunks)
+                        general_context_selected = "\n".join(top_general_chunks)
 
                 total_chars = verif_chars + len(general_context_selected) + len(chunk_text)
                 if total_chars > safe_char_cap:

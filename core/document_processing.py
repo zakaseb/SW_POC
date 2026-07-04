@@ -31,13 +31,20 @@ from docling_core.types import DoclingDocument
 from docling_core.types.doc import DocItemLabel
 from transformers import AutoTokenizer
 from urllib.parse import unquote, urlparse
+from docling_core.transforms.chunker.hierarchical_chunker import (
+    ChunkingDocSerializer, ChunkingSerializerProvider,
+)
+from docling_core.transforms.serializer.markdown import MarkdownTableSerializer
 
 logger = get_logger(__name__)
 
 # Parallel Ollama calls during chunk classification; keep modest to avoid overloading.
 _CLASSIFY_MAX_WORKERS = 4
 
-
+class MDTableSerializerProvider(ChunkingSerializerProvider):
+    def get_serializer(self, doc):
+        return ChunkingDocSerializer(doc=doc, table_serializer=MarkdownTableSerializer())
+    
 def _resolve_max_tokens(tokenizer) -> int:
     """
     Determine a safe max token length for Docling's HF tokenizer without
@@ -142,8 +149,8 @@ def _get_docling_converter(is_pdf: bool):
             from docling.document_converter import PdfFormatOption
 
             pdf_options = PdfPipelineOptions()
-            pdf_options.do_ocr = False
-            pdf_options.do_table_structure = False
+            pdf_options.do_ocr = True
+            pdf_options.do_table_structure = True
             _DOCLING_CONVERTERS[is_pdf] = DocumentConverter(
                 format_options={InputFormat.PDF: PdfFormatOption(pipeline_options=pdf_options)}
             )
@@ -300,6 +307,152 @@ def load_document(file_path):
         st.error(f"{user_message} Check logs for details.")
         return []
 
+
+def _iter_docx_blocks(document):
+    """Yield paragraphs and tables of a python-docx Document in body order."""
+    from docx.oxml.table import CT_Tbl
+    from docx.oxml.text.paragraph import CT_P
+    from docx.table import Table
+    from docx.text.paragraph import Paragraph
+
+    for child in document.element.body.iterchildren():
+        if isinstance(child, CT_P):
+            yield Paragraph(child, document)
+        elif isinstance(child, CT_Tbl):
+            yield Table(child, document)
+
+
+def format_verification_context(file_path, include_tables: bool = False) -> str:
+    """Read a .docx into clean plain text for use as prompt context.
+
+    Emits each non-empty paragraph (headings and body alike) as its own line,
+    preserving in-paragraph line breaks, in document order. This deliberately
+    bypasses the Docling chunk pipeline, whose output for this document carries
+    injected heading numbers, serialized tables, bullet markers, heading
+    breadcrumbs and chunk separators. Tables are skipped by default; set
+    include_tables=True to render them as 'first_cell: rest' rows.
+    """
+    from docx.table import Table
+    from docx.text.paragraph import Paragraph
+
+    try:
+        document = docx.Document(str(file_path))
+    except DocxPackageNotFoundError:
+        logger.error("Verification context file not found or not a .docx: %s", file_path)
+        return ""
+    except Exception as exc:  # noqa: BLE001 - context is optional; never break generation
+        logger.exception("Failed to read verification context '%s': %s", file_path, exc)
+        return ""
+
+    lines: list[str] = []
+    for block in _iter_docx_blocks(document):
+        if isinstance(block, Paragraph):
+            text = block.text.strip()
+            if text:
+                lines.append(text)
+        elif include_tables and isinstance(block, Table):
+            for row in block.rows:
+                cells = [c.text.strip() for c in row.cells]
+                if any(cells):
+                    rest = " | ".join(cells[1:])
+                    lines.append(cells[0] + ((": " + rest) if rest else ""))
+
+    if not lines:
+        logger.warning("Verification context produced no text: %s", file_path)
+    return "\n".join(lines)
+
+
+def _table_text_from_cells(table_item) -> str:
+    """Render a TableItem from its raw cells, bypassing export_to_markdown()/
+    export_to_text(). Both exporters share a known Docling bug
+    (docling-project/docling#1575) where document-level export can silently
+    skip or reorder items, which in practice drops whole table sections
+    (single-row layout tables in particular). Reading table_cells directly is
+    unaffected by that traversal and reliably recovers the missing rows. This
+    is a safety net alongside MDTableSerializerProvider above -- markdown
+    serialization fixes most empty-table cases, but a table can still
+    serialize to nothing (or its whole section be skipped by the chunker) in
+    which case this rebuild step recovers it independently of the chunker.
+    """
+    try:
+        cells = table_item.data.table_cells
+    except Exception:
+        return ""
+    if not cells:
+        return ""
+    rows: dict[int, dict[int, str]] = {}
+    for c in cells:
+        rows.setdefault(c.start_row_offset_idx, {})[c.start_col_offset_idx] = (c.text or "").strip()
+    lines = []
+    for r in sorted(rows):
+        row = rows[r]
+        line = " | ".join(row[k] for k in sorted(row) if row.get(k))
+        if line:
+            lines.append(line)
+    return "\n".join(lines)
+
+
+def _build_heading_ancestry(seq) -> dict:
+    """Map each SECTION_HEADER's position in `seq` to its full ancestor chain
+    (root -> leaf), reconstructed from heading levels.
+
+    Mirrors what the HybridChunker does internally when it fills
+    meta.headings for a normal chunk (it keeps a level-based stack as it
+    walks the document). Recovered sections never go through the chunker, so
+    this rebuilds the same ancestry independently, from the same item
+    sequence, so recovered chunks get a heading chain consistent with
+    everything else.
+    """
+    stack: list[tuple[int, str]] = []   # (level, text), root first
+    ancestry: dict[int, list[str]] = {}
+    for i, (item, _) in enumerate(seq):
+        if item.label != DocItemLabel.SECTION_HEADER:
+            continue
+        level = getattr(item, "level", None) or 1
+        text = item.text.strip()
+        while stack and stack[-1][0] >= level:
+            stack.pop()
+        stack.append((level, text))
+        ancestry[i] = [t for _, t in stack]
+    return ancestry
+
+
+def _recover_missing_table_sections(dl_doc, chunks, seq) -> list[tuple[str, str, int]]:
+    """(heading, text, position) for any SECTION_HEADER whose body produced
+    no chunk. `position` is the header's index in `seq` (iterate_items()),
+    used to reinsert the recovered chunk at the correct place in document
+    order and to look it up in _build_heading_ancestry.
+
+    The chunker's table serialization can render a layout table (no real
+    header row) as empty text; when that happens the whole section is
+    skipped and its heading never appears in any chunk's meta.headings. This
+    walks the same item sequence directly and rebuilds the section body from
+    raw table cells and paragraph text, so the content is recovered
+    regardless of how the chunker or exporters treated it.
+    """
+    present = {h.strip() for c in chunks for h in (c.meta.headings or [])}
+    recovered = []
+    for i, (item, _) in enumerate(seq):
+        if item.label != DocItemLabel.SECTION_HEADER:
+            continue
+        heading = item.text.strip()
+        if heading in present:
+            continue
+        parts, j = [], i + 1
+        while j < len(seq) and seq[j][0].label != DocItemLabel.SECTION_HEADER:
+            child = seq[j][0]
+            if child.label == DocItemLabel.TABLE:
+                text = _table_text_from_cells(child)
+            else:
+                text = (getattr(child, "text", "") or "").strip()
+            if text:
+                parts.append(text)
+            j += 1
+        if parts:
+            recovered.append((heading, "\n\n".join(parts), i))
+    return recovered
+
+
 def chunk_documents(raw_documents, storage_path=PDF_STORAGE_PATH, classify=False):
     if not raw_documents:
         logger.warning("chunk_documents called with no raw documents.")
@@ -385,9 +538,34 @@ def chunk_documents(raw_documents, storage_path=PDF_STORAGE_PATH, classify=False
                     logger.warning(
                         f"PDF path '{full_path}' not found; skipping ToC-based heading expansion."
                     )
+                chunks = list(chunker.chunk(dl_doc))
+            else:
+                chunker = HybridChunker(
+                    tokenizer=hf_tokenizer,
+                    merge_peers=True,
+                    serializer_provider=MDTableSerializerProvider(),   # full markdown tables in chunks
+                    # repeat_table_header=True,   # keep header on each split of a wide/long table
+                )
+                chunks = list(chunker.chunk(dl_doc))
 
-            chunks = list(chunker.chunk(dl_doc))
             logger.info(f"Number of chunks before deduplication: {len(chunks)}")
+
+            # Compute a document-order key for every chunk (normal + recovered)
+            # so recovered sections are reinserted in the right place instead
+            # of appended at the end. `doc_item_seq` is walked once and reused
+            # by both the position lookup and the recovery/ancestry helpers.
+            # `header_position` maps a header's own (pre-expansion) text to its
+            # index -- pre-expansion so it matches the raw item text below even
+            # for PDFs, where expand_headings_with_parents may rewrite the leaf.
+            doc_item_seq = list(dl_doc.iterate_items())
+            header_position: dict[str, int] = {}
+            for idx, (doc_item, _) in enumerate(doc_item_seq):
+                if doc_item.label == DocItemLabel.SECTION_HEADER:
+                    header_position.setdefault(doc_item.text.strip(), idx)
+            heading_ancestry = _build_heading_ancestry(doc_item_seq)
+
+            doc_ordered_items: list[tuple[float, int, object]] = []
+            tiebreak = 0
 
             for i, c in enumerate(chunks):
                 chunk_text = c.text.strip()
@@ -396,24 +574,73 @@ def chunk_documents(raw_documents, storage_path=PDF_STORAGE_PATH, classify=False
 
                 processed_chunk_texts.add(chunk_text)
 
+                raw_headings = list(c.meta.headings) if c.meta.headings else []
+                raw_leaf = raw_headings[-1] if raw_headings else None
+                position = header_position.get(raw_leaf, float("inf"))
+
                 # For PDFs, expand a numbered leaf heading into its full ancestor
                 # chain. The ToC index (when PyMuPDF is available) supplies real
                 # parent titles; otherwise depth is still reconstructed from the
                 # leaf's section number so indentation is preserved. For non-PDFs,
                 # the chunker already provides the full heading chain.
-                headings = list(c.meta.headings) if c.meta.headings else []
+                headings = raw_headings
                 if is_pdf_source and headings:
                     headings = expand_headings_with_parents(headings, toc_index)
 
-                if classify:
-                    chunks_pending_classification.append((chunk_text, headings, doc_metadata))
-                else:
-                    all_chunks.append(
-                        LangchainDocument(
-                            page_content=chunk_text,
-                            metadata={**doc_metadata, "headings": headings, "in_memory": False},
-                        )
+                payload = (
+                    (chunk_text, headings, doc_metadata) if classify else
+                    LangchainDocument(
+                        page_content=chunk_text,
+                        metadata={**doc_metadata, "headings": headings, "in_memory": False},
                     )
+                )
+                doc_ordered_items.append((position, tiebreak, payload))
+                tiebreak += 1
+
+            # Recover sections whose body produced no chunk at all -- typically
+            # a layout table (no real header row) that the chunker's table
+            # serialization rendered as empty text. See
+            # _recover_missing_table_sections for why this can't be fixed by
+            # export_to_markdown()/export_to_text() alone, and isn't fully
+            # covered by MDTableSerializerProvider either (a table can still
+            # serialize to nothing in the visited-set edge case). Each
+            # recovered section gets its full heading ancestry from
+            # _build_heading_ancestry (recovered chunks never go through the
+            # chunker's own heading tracking, so without this they'd carry
+            # only their own leaf heading and lose their parents).
+            for heading, recovered_text, position in _recover_missing_table_sections(
+                dl_doc, chunks, doc_item_seq
+            ):
+                if not recovered_text or recovered_text in processed_chunk_texts:
+                    continue
+                processed_chunk_texts.add(recovered_text)
+
+                recovered_headings = heading_ancestry.get(position, [heading])
+                if is_pdf_source and toc_index:
+                    # No-op when the leaf is unnumbered (returns the ancestry
+                    # list unchanged); rebuilds the chain from toc_index when
+                    # it is, same as normal PDF chunks.
+                    recovered_headings = expand_headings_with_parents(recovered_headings, toc_index)
+
+                payload = (
+                    (recovered_text, recovered_headings, doc_metadata) if classify else
+                    LangchainDocument(
+                        page_content=recovered_text,
+                        metadata={**doc_metadata, "headings": recovered_headings, "in_memory": False},
+                    )
+                )
+                doc_ordered_items.append((position, tiebreak, payload))
+                tiebreak += 1
+                logger.info(f"Recovered section skipped by chunker: {heading!r}")
+
+            # Reinsert everything in document order -- recovered sections
+            # interleave with their siblings instead of landing at the end.
+            doc_ordered_items.sort(key=lambda t: (t[0], t[1]))
+            for _, _, payload in doc_ordered_items:
+                if classify:
+                    chunks_pending_classification.append(payload)
+                else:
+                    all_chunks.append(payload)
 
         if classify and chunks_pending_classification:
             language_model = get_language_model()
