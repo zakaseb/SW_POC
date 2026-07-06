@@ -41,7 +41,9 @@ from core.document_processing import (
     load_document,
     chunk_documents,
     index_documents,
+    format_verification_context,
 )
+from langchain_core.documents import Document as LangchainDocument
 from core.search_pipeline import get_persistent_context, get_general_context, get_requirements_chunks
 from core.generation import generate_answer
 from core.session_manager import (
@@ -669,9 +671,18 @@ if st.session_state.document_processed:
             if not requirements_chunks:
                 st.sidebar.warning("No requirements chunks found to process.")
             else:
-                verif_docs = get_persistent_context(
-                    context_vector_db=st.session_state.PERSISTENT_VECTOR_DB
-                )
+                # Build the verification context by reading the Verification
+                # Methods document directly, producing clean text (no Docling
+                # heading numbers, serialized tables, bullets or breadcrumbs).
+                # Passed as a single doc; the job concatenates page_content as-is.
+                verif_path = ensure_global_context_bootstrap()
+                verif_text = format_verification_context(verif_path)
+                verif_docs = [
+                    LangchainDocument(
+                        page_content=verif_text,
+                        metadata={"source": Path(verif_path).name},
+                    )
+                ]
                 general_docs = get_general_context(
                     general_vector_db=st.session_state.GENERAL_VECTOR_DB
                 )

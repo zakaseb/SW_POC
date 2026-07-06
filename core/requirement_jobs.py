@@ -18,6 +18,7 @@ from .database import (
 )
 from .generation import generate_requirements_json, generate_excel_file, parse_requirements_payload
 from .heading_cleanup import headings_before_first_numbered, is_numbered_heading
+from .source_matching import best_source_sentence, sanitize_excel_text
 from .logger_config import get_logger
 from core.jama_hierarchy import build_hierarchy_workbook_bytes
 
@@ -56,7 +57,7 @@ class RequirementJobManager:
         requirements_chunks: List[Any],
         verification_docs: List[Any],
         general_docs: List[Any],
-        top_k_general: int = 8,
+        top_k_general: int = 3,
         safe_char_cap: int = 32000,
     ) -> str:
         job_id = str(uuid.uuid4())
@@ -100,10 +101,31 @@ class RequirementJobManager:
         update_requirement_job(job_id, status="running")
         try:
             joiner = "\n\n---\n\n"
+
+            def _verification_block(doc) -> str:
+                """Chunk text with its heading path restored in front.
+
+                The HybridChunker stores the heading path in metadata['headings']
+                (not in page_content), so joining page_content alone drops the
+                headings. Re-attach them here so the verification context keeps
+                its section structure.
+                """
+                meta = getattr(doc, "metadata", {}) or {}
+                headings = meta.get("headings") or []
+                text = (getattr(doc, "page_content", "") or "").strip()
+                if headings:
+                    return " > ".join(headings) + "\n" + text
+                return text
+
+            # similarity_search returns chunks in similarity order, not document
+            # order; sort by the chunk_index written at chunking time so the whole
+            # document is reassembled in its original order.
+            verification_docs_ordered = sorted(
+                (d for d in verification_docs if getattr(d, "page_content", None)),
+                key=lambda d: (getattr(d, "metadata", {}) or {}).get("chunk_index", 0),
+            )
             verification_context_all = joiner.join(
-                doc.page_content.strip()
-                for doc in verification_docs
-                if getattr(doc, "page_content", None)
+                _verification_block(d) for d in verification_docs_ordered
             )
 
             general_paragraphs = _prepare_general_paragraphs(general_docs)
@@ -163,7 +185,7 @@ class RequirementJobManager:
                             for idx in ranked_indices
                             if general_paragraphs[idx].strip()
                         ]
-                        general_context_selected = joiner.join(top_general_chunks)
+                        general_context_selected = "\n".join(top_general_chunks)
 
                 total_chars = verif_chars + len(general_context_selected) + len(chunk_text)
                 if total_chars > safe_char_cap:
@@ -183,9 +205,20 @@ class RequirementJobManager:
                 requirements_payload.append(json_response)
                 # Pair each parsed requirement group with its heading path so the
                 # hierarchy workbook can indent it under the right section.
-                chunk_results.append(
-                    (headings_path, parse_requirements_payload([json_response]))
-                )
+                parsed_chunk_reqs = parse_requirements_payload([json_response])
+                # Trace every requirement back to the exact chunk and sentence it
+                # was extracted from. Duplication across rows is expected: several
+                # requirements may originate from the same chunk/sentence.
+                for req in parsed_chunk_reqs:
+                    if not isinstance(req, dict):
+                        continue
+                    source_sentence, conf_score = best_source_sentence(
+                        req.get("Description", ""), chunk_text
+                    )
+                    req["source_chunk"] = sanitize_excel_text(chunk_text)
+                    req["source_sentence"] = source_sentence
+                    req["conf_score"] = conf_score
+                chunk_results.append((headings_path, parsed_chunk_reqs))
 
             logger.info(
                 "Job %s: processed %d chunk(s), skipped %d front-matter chunk(s).",

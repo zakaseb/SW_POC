@@ -26,6 +26,8 @@ from openpyxl import Workbook
 from openpyxl.styles import Alignment, Font
 from openpyxl.utils import get_column_letter
 
+from .source_matching import sanitize_excel_text
+
 COLS = [
     "Level",
     "Name",
@@ -34,8 +36,11 @@ COLS = [
     "RequirementType",
     "Tags",
     "DocumentRequirementID",
+    "source_chunk",
+    "source_sentence",
+    "conf_score",
 ]
-COL_WIDTHS = {1: 8, 2: 60, 3: 70, 4: 22, 5: 22, 6: 18, 7: 22}
+COL_WIDTHS = {1: 8, 2: 60, 3: 70, 4: 22, 5: 22, 6: 18, 7: 22, 8: 80, 9: 70, 10: 12}
 
 PLAIN_FONT  = Font(name="Arial", size=10)
 HEADER_FONT = Font(name="Arial", size=10, bold=True)
@@ -61,7 +66,7 @@ def _plain_row(ws, row_idx, values, height=15, indent=0):
 
 
 def _section_row(ws, row_idx, level, name):
-    _plain_row(ws, row_idx, [str(level), name, "", "", "", "", ""],
+    _plain_row(ws, row_idx, [str(level), name, "", "", "", "", "", "", "", ""],
                height=15, indent=level)
 
 
@@ -77,6 +82,9 @@ def _requirement_row(ws, row_idx, level, req):
             req.get("RequirementType", ""),
             _tags_to_str(req.get("Tags", "")),
             req.get("DocumentRequirementID", ""),
+            sanitize_excel_text(req.get("source_chunk", "")),
+            sanitize_excel_text(req.get("source_sentence", "")),
+            req.get("conf_score", ""),
         ],
         height=30,
         indent=level,

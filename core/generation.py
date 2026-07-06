@@ -10,6 +10,7 @@ from .config import (
     SUMMARIZATION_PROMPT_TEMPLATE,
     KEYWORD_EXTRACTION_PROMPT_TEMPLATE,
     CHUNK_CLASSIFICATION_PROMPT_TEMPLATE,
+    REQUIREMENT_TYPE_CONTEXT, 
 )
 from .logger_config import get_logger
 
@@ -65,7 +66,7 @@ def generate_answer(
         return f"{user_message} Please try again later or rephrase your question. (Details: {e})"
 
 
-def generate_requirements_json(language_model, requirement_chunk, verification_methods_context: str = "", general_context: str = ""):
+def generate_requirements_json(language_model, requirement_chunk, verification_methods_context: str = "", general_context: str = "", requirement_type_context: str = REQUIREMENT_TYPE_CONTEXT):
     """
     Generates a JSON object for a single requirement chunk.
     """
@@ -82,9 +83,9 @@ def generate_requirements_json(language_model, requirement_chunk, verification_m
         response = response_chain.invoke({
             "document_context": context_text,
             "verification_methods_context": verification_methods_context,
+            "requirement_type_context": requirement_type_context,
             "general_context": general_context,
         })
-
         if not response or not response.strip():
             logger.warning("AI model returned an empty response for requirements JSON generation.")
             return "{}"
@@ -127,6 +128,7 @@ def generate_summary(language_model, full_document_text):
         )
         return f"{user_message} Please try again later. (Details: {e})"
 
+_REQUIREMENT_MODAL_RE = re.compile(r"\b(shall|should)\b", re.IGNORECASE)
 
 def classify_chunk(language_model, chunk_text):
     """
@@ -138,6 +140,9 @@ def classify_chunk(language_model, chunk_text):
 
     logger.debug(f"Classifying chunk: '{chunk_text[:50]}...'")
     try:
+        if _REQUIREMENT_MODAL_RE.search(chunk_text or ""):
+            return "Requirements"
+        
         classification_prompt = ChatPromptTemplate.from_template(
             CHUNK_CLASSIFICATION_PROMPT_TEMPLATE
         )
