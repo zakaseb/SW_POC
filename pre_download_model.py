@@ -4,7 +4,7 @@ Run this while you have internet connectivity.
 """
 
 from pathlib import Path
-
+import requests
 from huggingface_hub import snapshot_download
 from sentence_transformers import CrossEncoder
 from transformers import AutoTokenizer
@@ -17,6 +17,9 @@ from core.config import (
     TOKENIZER_LOCAL_PATH,
     TOKENIZER_MODEL_NAME,
     DOCLING_ARTIFACTS_PATH,
+    OLLAMA_BASE_URL,
+    OLLAMA_LLM_NAME,
+    OLLAMA_EMBEDDING_MODEL_NAME,
 )
 
 
@@ -87,6 +90,68 @@ def download_docling_layout_models():
 
     print("✓ Docling layout/OCR models cached.")
 
+def _ollama_installed_tags(base_url: str) -> set[str]:
+    """
+    Returns the set of model tags currently pulled in the local Ollama instance.
+    Raises if Ollama itself isn't reachable (distinct from "model missing").
+    """
+    resp = requests.get(f"{base_url}/api/tags", timeout=5)
+    resp.raise_for_status()
+    return {m["name"] for m in resp.json().get("models", [])}
+
+
+def _ollama_pull(base_url: str, model_name: str) -> None:
+    """
+    Streams `ollama pull <model_name>` via the HTTP API and prints progress.
+    """
+    print(f"→ Pulling Ollama model '{model_name}' ...")
+    with requests.post(
+        f"{base_url}/api/pull",
+        json={"model": model_name, "stream": True},
+        stream=True,
+        timeout=None,
+    ) as resp:
+        resp.raise_for_status()
+        last_status = None
+        for line in resp.iter_lines():
+            if not line:
+                continue
+            event = json.loads(line)
+            status = event.get("status")
+            if status and status != last_status:
+                print(f"    {status}")
+                last_status = status
+            if event.get("error"):
+                raise RuntimeError(f"Ollama pull failed for '{model_name}': {event['error']}")
+    print(f"✓ Ollama model '{model_name}' ready.")
+
+
+def ensure_ollama_models():
+    """
+    Ensures every Ollama model tag the app depends on (LLM + embedding) is
+    pulled locally. Pulls whatever is missing; no-ops for tags already present.
+    Skips gracefully (with a warning) if Ollama isn't reachable, since this
+    script may run before Ollama is started.
+    """
+    required = {OLLAMA_LLM_NAME, OLLAMA_EMBEDDING_MODEL_NAME}
+
+    try:
+        installed = _ollama_installed_tags(OLLAMA_BASE_URL)
+    except Exception as e:
+        print(
+            f"⚠ Could not reach Ollama at {OLLAMA_BASE_URL} to check installed models "
+            f"({e}). Skipping model pull — make sure to run "
+            f"`ollama pull {'` and `ollama pull '.join(sorted(required))}` manually."
+        )
+        return
+
+    for model_name in sorted(required):
+        # Ollama tags are often stored with an implicit ":latest" suffix.
+        candidates = {model_name, f"{model_name}:latest"} if ":" not in model_name else {model_name}
+        if installed & candidates:
+            print(f"✓ Ollama model '{model_name}' already present.")
+            continue
+        _ollama_pull(OLLAMA_BASE_URL, model_name)
 
 def main():
     MODEL_CACHE_DIR.mkdir(parents=True, exist_ok=True)
@@ -94,7 +159,8 @@ def main():
     download_reranker()
     download_tokenizer()
     download_docling_layout_models()
-    print("All offline assets cached. Remember to `ollama pull` the LLM/embedding tags you use.")
+    ensure_ollama_models()
+    print("All offline assets cached.")
 
 
 if __name__ == "__main__":
