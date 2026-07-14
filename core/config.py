@@ -35,40 +35,36 @@ Answer:
 """
 
 REQUIREMENT_JSON_PROMPT_TEMPLATE = """
-You are an expert system engineer specialized in requirement extraction. Your task is to analyze the provided text chunk and extract all the requirements CONTAINED IN THAT CHUNK.
+You are an expert system engineer specialized in requirement extraction.
+Your task is to extract every sentence or statement in the Text Chunk that expresses a requirement, behavior, capability, constraint, limit, interface, configuration rule, expected action, or design decision.
 For each requirement found in the text chunk, you must generate a single JSON object that follows the schema below.
 If a chunk contains multiple requirements, generate a list of JSON objects.
 If the chunk contains no requirements, return an empty list [].
 Your response MUST be only the JSON data (a single object or a list of objects) and nothing else. Do not include any prefixes, suffixes, or explanations.
 
-SCOPE: 
-- The Text Chunk is the ONLY source of requirements. 
-- VERIFICATION METHODS REFERENCE, REQUIREMENT TYPE REFERENCE, and GENERAL CONTEXT are READ-ONLY - use them only to fill fields and clarify terms, NEVER as a source of requirements (even if they contain 'shall'). 
-- If the Text Chunk has no requirements, return [].
+SCOPE:
+- The Text Chunk is the ONLY source of requirements. VERIFICATION METHODS REFERENCE, REQUIREMENT TYPE REFERENCE, and GENERAL CONTEXT are read-only — use them only to fill fields, never as a requirement source.
+- A source statement does NOT need "shall"/"should" — imperative instructions, parameter/limit specs, tables, and "is"/"are"/"will" statements all qualify. Rewrite each into EARS 'shall' format in Description, same as a native "shall" sentence.
+- COMPLETENESS: Scan the full chunk end-to-end. Extract EVERY qualifying statement, including every row of a list/table, not just the first few. Re-check before finalizing that nothing near the end or in repeated rows was skipped. When unsure whether something qualifies, extract it.
 
 JSON Schema:
 {{
-  "Name": "string",
+  "Name": "short descriptive title",
   "Description": "single EARS 'shall' statement, content drawn from the Text Chunk",
-  "VerificationMethod": "Analysis | Inspection | Test | Demonstration (use VERIFICATION METHODS REFERENCE)",
-  "Tags": ["TBD" if description has TBD/TBC; add "Updated" if rewritten/split per quality rules below],
-  "RequirementType": "Functional Req. | Performance Req. | Interface Req. | Constraint Req. (use REQUIREMENT TYPE REFERENCE)",
-  "DocumentRequirementID": "ID copied verbatim from the chunk if present (e.g. SS_TO_SR-SOI_SYS_REQ-1, SYS_REQ-12, REQ_014), else empty string - never invent one"
+  "VerificationMethod": "one of [Analysis, Inspection, Test, Demonstration]. Use the VERIFICATION METHODS REFERENCE below to select the correct method.",
+  "Tags": ["TBD" if description has TBD/TBC],
+  "RequirementType": "one of [Functional Req., Performance Req., Interface Req., Constraint Req.]. Use the REQUIREMENT TYPE REFERENCE below to select the correct type.",
+  "DocumentRequirementID": "ID copied verbatim if present (e.g. SYS_REQ-12), else empty string — never invent one"
 }}
 
-QUALITY: Each requirement must be verifiable, autonomous, unambiguous, concise, and a single EARS 'shall' statement. If not, rewrite it to comply, tag 'Updated', and split one overloaded requirement into several if needed.
+QUALITY & EARS SYNTAX: 
+Each Description must be verifiable, unambiguous, active voice, exactly one 'shall', named specific system (never vague "the system"/"it"). Split overloaded requirements into several.
+Pattern: [Where <feature>,] [While <state>,] [When <trigger> | If <trigger>, then] <system> shall <response>.
+  e.g. "While the aircraft is in-flight, the control system shall maintain fuel flow above 5 lbs/sec."
+  e.g. "When ignition is commanded, the control system shall switch on continuous ignition."
+If a requirement resists clean EARS phrasing, write the closest 'shall' statement. Prioritize completeness over perfect phrasing.
 
-EARS SYNTAX (mandatory, keyword order Where -> While -> When/If-then -> "<system> shall <response>"):
-- Ubiquitous: <system> shall <response>.  e.g. "The control system shall prevent engine overspeed."
-- State-driven (WHILE): While <precondition>, <system> shall <response>.  e.g. "While the aircraft is in-flight, the control system shall maintain fuel flow above 5 lbs/sec."
-- Event-driven (WHEN): When <trigger>, <system> shall <response>.  e.g. "When ignition is commanded, the control system shall switch on continuous ignition."
-- Optional feature (WHERE): Where <feature included>, <system> shall <response>.  e.g. "Where overspeed protection is included, the control system shall test its availability prior to dispatch."
-- Unwanted behaviour (IF/THEN): If <trigger>, then <system> shall <response>.  e.g. "If computed airspeed is unavailable, then the control system shall use modelled airspeed."
-- Complex: combine the above, e.g. "While the aircraft is on the ground, when reverse thrust is commanded, the control system shall enable deployment of the thrust reverser."
-
-Rules: name the specific system immediately before 'shall' (never vague 'the system'/'it'); active voice; exactly one 'shall'; at most one trigger; up to 3 preconditions (else split); one-or-more responses. If a requirement is a formula/graphic that can't be cleanly EARS-ified, write the closest 'shall' statement, keep the value, tag 'Updated'.
-
-Examples of desired JSON objects:
+Example JSON object:
 {{
   "Name": "Torque Setpoint CAN Message",
   "Description": "When a new torque setpoint is computed, the control system shall transmit CAN message 0x3A2 containing the torque setpoint.",
@@ -77,16 +73,8 @@ Examples of desired JSON objects:
   "RequirementType": "Interface Req.",
   "DocumentRequirementID": "SS_TO_SR-SOI_SYS_REQ-1"
 }}
-{{
-  "Name": "ADC Voltage Scaling",
-  "Description": "When an ADC sample is available, the control system shall scale the ADC value by TBD to obtain the measured voltage.",
-  "VerificationMethod": "Analysis",
-  "Tags": ["TBD"],
-  "RequirementType": "Functional Req.",
-  "DocumentRequirementID": ""
-}}
 
-Now, analyze the following Text Chunk and extract ONLY the requirements stated in it. Every Description you output MUST be a single EARS 'shall' statement drawn from this Text Chunk.
+Now scan the full chunk end-to-end and extract EVERY qualifying statement.
 
 Text Chunk:
 {document_context}
@@ -125,41 +113,36 @@ Keywords:
 
 CHUNK_CLASSIFICATION_PROMPT_TEMPLATE = """
 You are an expert document analyst. Classify the following text chunk into one of two categories:
-1.  **General Context**: Portions of a document that provide broad, high-level information. This includes introductions, overviews, and background information that help a reader understand the overall context of the document, but do not contain specific, detailed requirements.
-2.  **Requirements**: Portions of a document that contain specific, detailed, and actionable requirements, specifications, or instructions. These are the granular details of a project, system, or process. A requirement should be a statement that can be verified or tested.
+1.  **General Context**: Portions of a document that provide broad, high-level information. This includes introductions, overviews, and background information that help a reader understand the overall context of the document, but do not contain any requirements.
+2.  **Requirements**: Portions of a document that contain specific requirements, specifications, or instructions. These are the technical details of a project, system, or process. A requirement should be a statement that can be verified or tested.
 
-PRIORITY RULE (apply this first, it overrides everything else):
-If the text chunk contains the word "shall" or "should" (in any casing, as a whole word), classify it as "Requirements" - even if the chunk also looks like introductory or overview text. Only when neither "shall" nor "should" appears should you weigh the chunk against the two category descriptions above.
+IMPORTANT: 
+Requirements are not limited to statements containing "shall" or "should". 
+Declarative statements using "is", "are", or "will" also qualify in addition to imperative instructions and parameter/limit specifications (including tables). 
 
-I will provide below an example of both classes to get a better understanding of the required task. 
-An example of the "General Context" class is:
-"Introduction:
-This document specifies the technical system requirements for the All-Terrain Military Hybrid Vehicle (ATMHV), translating user needs (as defined in the URS) into detailed, implementable, and verifiable system requirements. The A-Spec outlines functional, performance, interface, design, safety, and verification criteria to guide system development, integration, and testing.
-System Overview:
-The ATMHV is an 8-passenger hybrid-powered vehicle designed for military operations across challenging terrains including deserts, forests, swamps, and snow. The vehicle provides off-road mobility, tactical communication capabilities, protection against threats, and logistics support. It must operate reliably across extreme environmental conditions.
-"
-An example of the "Requirements" class is:
-"       SS_TO_SR-SOI_SYS_REQ-1
-Maximum Speed Limitation #1
-The system shall support maximum speed limitation #1 as per mission profile and design objectives. 
-Verification Method(s): Analysis
-       SS_TO_SR-SOI_SYS_REQ-2
-Environmental Operating Range #2
-The system shall support environmental operating range #2 as per mission profile and design objectives. 
-Verification Method(s): Inspection
-       SS_TO_SR-SOI_SYS_REQ-3
-Minimum Range Capability #3
-The system shall support minimum range capability #3 as per mission profile and design objectives. 
-Verification Method(s): Demonstration
-       SS_TO_SR-SOI_SYS_REQ-4
-Dual-Mode Powertrain #4
-The system shall support dual-mode powertrain #4 as per mission profile and design objectives. 
-Verification Method(s): Test
-       SS_TO_SR-SOI_SYS_REQ-5
-Dynamic Power Mode Switching #5
-The system shall support dynamic power mode switching #5 as per mission profile and design objectives. 
-Verification Method(s): Test
-"
+Examples of "General Context" class:
+"Introduction: This document specifies the technical system requirements for the All-Terrain Military Hybrid Vehicle (ATMHV), translating user needs (as defined in the URS) into detailed, implementable, and verifiable system requirements. The A-Spec outlines functional, performance, interface, design, safety, and verification criteria to guide system development, integration, and testing."
+
+Examples of "Requirements" class:
+"The interface will timeout and enter a fail-safe state if no message is received within 200 ms."
+"The default baud rate for UART2 is 115200."
+"The BOOT state is a transitional state under normal conditions. The system enters BOOT immediately after power-on reset and remains in BOOT until self-test completes."
+"Power Supply Specifications
+Input Voltage Range: 18V - 32V DC
+Max Input Current: 15A
+Operating Temperature: -40C to +71C
+Overvoltage Protection Threshold: 36V"
+"SS_TO_SR-SOI_SYS_REQ-1: The system shall support maximum speed limitation #1 as per mission profile and design objectives."
+"SS_TO_SR-SOI_SYS_REQ-2: The system shall support environmental operating range #2 as per mission profile and design objectives."
+
+QUALIFYING RULE (apply this to determine "Requirements", even without "shall"):
+Classify a chunk as "Requirements" if it contains a statement that:
+1. Names a specific system, component, module, state, or parameter, AND
+2. States a concrete, verifiable fact, value, limit, condition, state, or behavior about that named item.
+
+DISQUALIFYING RULE (apply this last, before finalizing your answer):
+Classify as "General Context" if the chunk consists ONLY of requirement IDs paired with metadata ABOUT other requirements defined elsewhere — e.g. traceability links, justification references, type codes, or verification method names in a "field = value" / "ID, Attribute = value" format — with no actual specification, parameter value, state/behavior description, or instruction stated directly in the chunk itself.
+
 Analyze the text chunk provided below and determine which category it belongs to.
 Your response should be a single word: either "General Context" or "Requirements".
 
@@ -198,12 +181,14 @@ standard/policy -> Constraint | everything else -> Functional
 # ========== Hard defaults (no env required) ==========
 # Models
 OLLAMA_EMBEDDING_MODEL_NAME = "nomic-embed-text:latest"
-OLLAMA_LLM_NAME             = "mistral:7b"
+# OLLAMA_LLM_NAME             = "mistral:7b"
+OLLAMA_LLM_NAME               = "qwen2.5:14b-instruct"
 RERANKER_MODEL_NAME         = "cross-encoder/ms-marco-MiniLM-L-6-v2"
 # Local HF cache + offline guardrails
 MODEL_CACHE_DIR          = Path("./models")
 HF_LOCAL_FILES_ONLY      = True  # avoid network calls at runtime
 TOKENIZER_MODEL_NAME     = "sentence-transformers/all-MiniLM-L6-v2"
+OLLAMA_NUM_CTX            = 8192
 
 # Storage
 BASE_STORE               = Path("./document_store")

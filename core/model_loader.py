@@ -12,6 +12,7 @@ from .config import (
     RERANKER_LOCAL_PATH,
     MODEL_CACHE_DIR,
     HF_LOCAL_FILES_ONLY,
+    OLLAMA_NUM_CTX
 )
 from .logger_config import get_logger
 
@@ -105,7 +106,7 @@ def get_language_model():
             logger.warning(msg)
             # no st.error, no return — we proceed like old days
 
-        model = OllamaLLM(model=OLLAMA_LLM_NAME, base_url=OLLAMA_BASE_URL)
+        model = OllamaLLM(model=OLLAMA_LLM_NAME, base_url=OLLAMA_BASE_URL, num_ctx=OLLAMA_NUM_CTX)
         logger.info(f"Language Model {OLLAMA_LLM_NAME} loaded successfully.")
         return model
 
