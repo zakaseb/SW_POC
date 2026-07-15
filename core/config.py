@@ -3,7 +3,8 @@ import os
 from pathlib import Path
 import json
 from urllib.parse import urlparse, urlunparse
-
+from dotenv import load_dotenv
+load_dotenv()
 
 # Global Application Constants
 MAX_HISTORY_TURNS = (
@@ -178,34 +179,61 @@ Decision rule: timing/accuracy -> Performance | external bus/signal -> Interface
 standard/policy -> Constraint | everything else -> Functional
 """
 
-# ========== Hard defaults (no env required) ==========
+# ===========================================================================
+# DROP-IN REPLACEMENT for core/config.py, from the "Hard defaults" block
+# down to (and including) the RAG_API_KEY line -- roughly lines 180-208.
+# Everything below that in the original file (config.local.json loading,
+# _normalize_url, OLLAMA_URL, the mkdir loop) stays exactly as it is.
+#
+# Add these two lines to the imports at the TOP of config.py:
+#     from dotenv import load_dotenv
+#     load_dotenv()
+# ===========================================================================
+
+def _env_str(key, default):
+    val = os.getenv(key)
+    return val if val not in (None, "") else default
+
+def _env_bool(key, default):
+    val = os.getenv(key)
+    if val in (None, ""):
+        return default
+    return val.strip().lower() in ("1", "true", "yes", "on")
+
+def _env_int(key, default):
+    try:
+        return int(os.getenv(key, default))
+    except (TypeError, ValueError):
+        return default
+
+# ========== Defaults (all overridable via .env) ==========
 # Models
-OLLAMA_EMBEDDING_MODEL_NAME = "nomic-embed-text:latest"
-# OLLAMA_LLM_NAME             = "mistral:7b"
-OLLAMA_LLM_NAME               = "qwen2.5:14b-instruct"
-RERANKER_MODEL_NAME         = "cross-encoder/ms-marco-MiniLM-L-6-v2"
+OLLAMA_EMBEDDING_MODEL_NAME = _env_str("OLLAMA_EMBEDDING_MODEL_NAME", "nomic-embed-text:latest")
+OLLAMA_LLM_NAME             = _env_str("OLLAMA_LLM_NAME", "qwen2.5:14b-instruct")
+RERANKER_MODEL_NAME         = _env_str("RERANKER_MODEL_NAME", "cross-encoder/ms-marco-MiniLM-L-6-v2")
+TOKENIZER_MODEL_NAME        = _env_str("TOKENIZER_MODEL_NAME", "sentence-transformers/all-MiniLM-L6-v2")
+OLLAMA_NUM_CTX              = _env_int("OLLAMA_NUM_CTX", 8192)
+
 # Local HF cache + offline guardrails
-MODEL_CACHE_DIR          = Path("./models")
-HF_LOCAL_FILES_ONLY      = True  # avoid network calls at runtime
-TOKENIZER_MODEL_NAME     = "sentence-transformers/all-MiniLM-L6-v2"
-OLLAMA_NUM_CTX            = 8192
+MODEL_CACHE_DIR             = Path(_env_str("MODEL_CACHE_DIR", "./models"))
+HF_LOCAL_FILES_ONLY         = _env_bool("HF_LOCAL_FILES_ONLY", True)
 
 # Storage
-BASE_STORE               = Path("./document_store")
+BASE_STORE               = Path(_env_str("BASE_STORE", "./document_store"))
 PDF_STORAGE_PATH         = str(BASE_STORE / "pdfs")
 CONTEXT_PDF_STORAGE_PATH = str(BASE_STORE / "context_pdfs")
 MEMORY_FILE_PATH         = str(BASE_STORE / "memory" / "context.json")
 REQUIREMENTS_OUTPUT_PATH = str(BASE_STORE / "generated_requirements")
 
-# Endpoints (local single-device defaults)
+# Endpoints
 # OLLAMA_BASE_URL is what the API wrapper uses to reach Ollama.
-# RAG_API_BASE is what the Streamlit app uses to reach your wrapper.
-OLLAMA_BASE_URL = "http://127.0.0.1:11434"
-RAG_API_BASE    = "http://127.0.0.1:8000"
+# RAG_API_BASE is what the Streamlit app uses to reach the wrapper.
+OLLAMA_BASE_URL = _env_str("OLLAMA_BASE_URL", "http://127.0.0.1:11434")
+RAG_API_BASE    = _env_str("RAG_API_BASE",    "http://127.0.0.1:8000")
 
 # Wrapper switch + (optional) auth
-USE_API_WRAPPER = True
-RAG_API_KEY     = ""  # set token here if you add auth to api.py
+USE_API_WRAPPER = _env_bool("USE_API_WRAPPER", True)
+RAG_API_KEY     = _env_str("RAG_API_KEY", "")
 
 _local_path = os.path.join(os.path.dirname(__file__), "config.local.json")
 if os.path.exists(_local_path):

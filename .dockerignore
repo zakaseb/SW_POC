@@ -39,8 +39,8 @@ dist/
 build/
 *.egg-info/
 
-# Secrets or local configuration (if any were planned)
-# .env
+# Secrets - injected via compose env_file, never baked into the image
+.env
 
 # Docker files themselves if not needed inside image
 Dockerfile

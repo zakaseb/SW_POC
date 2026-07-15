@@ -134,8 +134,8 @@ The application ships with:
 
 ### 1. Prerequisites
 
-- **Python** 3.9–3.12 (the Dockerfile pins 3.9; local virtualenvs work with 3.12 as well).
-- **Ollama** running on the same machine or reachable over the network. Pull the models you plan to reference (defaults: `mistral:7b` for both embeddings and generation).
+- **Python** 3.11–3.12 (the Dockerfile pins 3.11; Docling 2.x, NumPy 2.x, and Torch 2.7 require ≥3.10).
+- **Ollama** running on the same machine or reachable over the network. Pull the models you plan to reference (defaults: `qwen2.5:14b-instruct` for generation and `nomic-embed-text` for embeddings).
 - **Git**, **pip**, and build-essential libraries required by Docling (Poppler, libGL, etc., depending on your OS).
 - Optional: **Docker**/**Docker Compose** for container deployment, **Postman** if you plan to capture API traffic per `Run_steps.txt`.
 
@@ -192,7 +192,7 @@ python manage_users.py list  # optional sanity check
 python pre_download_model.py
 ```
 
-This caches `cross-encoder/ms-marco-MiniLM-L-6-v2` and the Docling tokenizer under `models/` so the first chat run does not block on downloads. Pull your Ollama models separately (e.g., `ollama pull mistral:7b`).
+This caches `cross-encoder/ms-marco-MiniLM-L-6-v2` and the Docling tokenizer under `models/` so the first chat run does not block on downloads. Pull your Ollama models separately (e.g., `ollama pull qwen2.5:14b-instruct` and `ollama pull nomic-embed-text`).
 
 ---
 
@@ -206,8 +206,8 @@ All configuration values live in `core/config.py`. You can override them via:
 | Variable | Description | Default |
 | -------- | ----------- | ------- |
 | `OLLAMA_BASE_URL` | Where LangChain should call Ollama for embeddings & generation. | `http://127.0.0.1:11434` |
-| `OLLAMA_EMBEDDING_MODEL_NAME` | Ollama model tag used for embeddings. Must support `/api/embeddings`. | `mistral:7b` |
-| `OLLAMA_LLM_NAME` | Ollama model used for answer & requirement generation. | `mistral:7b` |
+| `OLLAMA_EMBEDDING_MODEL_NAME` | Ollama model tag used for embeddings. Must support `/api/embeddings`. | `nomic-embed-text:latest` |
+| `OLLAMA_LLM_NAME` | Ollama model used for answer & requirement generation. | `qwen2.5:14b-instruct` |
 | `RERANKER_MODEL_NAME` | `sentence-transformers` CrossEncoder checkpoint. | `cross-encoder/ms-marco-MiniLM-L-6-v2` |
 | `MODEL_CACHE_DIR` | Local folder where Hugging Face assets are stored. | `./models` |
 | `HF_LOCAL_FILES_ONLY` | Prevent HF network calls at runtime (offline mode). | `True` |
@@ -231,7 +231,7 @@ All configuration values live in `core/config.py`. You can override them via:
 Follow this once while online to ensure the app runs without internet:
 
 1. `python pre_download_model.py` to cache the reranker and Docling tokenizer into `models/`.
-2. Pull your Ollama models locally, e.g., `ollama pull mistral:7b` (and any alternate tags you configure).
+2. Pull your Ollama models locally, e.g., `ollama pull qwen2.5:14b-instruct` (and `nomic-embed-text`).
 3. Keep `HF_LOCAL_FILES_ONLY=True` (default) so the app refuses to fetch from Hugging Face at runtime; caches live under `MODEL_CACHE_DIR`.
 4. Run Streamlit / FastAPI normally. If a model is missing, the UI surfaces an explicit error pointing back to the cache script.
 
@@ -274,16 +274,135 @@ This workflow is useful when you need to audit every `/generate`/`/embed` call w
 
 ### Docker Compose
 
-1. Ensure Ollama is running on the host (or amend `docker-compose.yml` to point to your Ollama container/network).
-2. From the repo root:
-   ```bash
-   docker-compose up --build -d
-   ```
-3. Visit `http://localhost:8501`. Uploaded files and generated artifacts live in the host `document_store/` folder because it is bind-mounted into the container.
-4. Stop the stack with:
-   ```bash
-   docker-compose down
-   ```
+The compose stack runs two containers from a single image — the **FastAPI wrapper** (`api`, port 8000) and the **Streamlit UI** (`streamlit`, port 8501). **Ollama is *not* containerised**; both services reach an Ollama instance running on the host. This keeps GPU access simple: Ollama uses the host GPU directly, while the containers run a CPU-only PyTorch build (used only for the lightweight CrossEncoder reranker and Docling layout models, so a GPU there buys almost nothing).
+
+#### 1. Prerequisites on the host
+
+- **Docker** and the **Docker Compose v2** plugin (`docker compose`, not the legacy `docker-compose`).
+- **Ollama** installed and running on the host, bound so containers can reach it (see step 3).
+- The pruned **`requirements_sw_final.txt`** in the repo root (the Dockerfile installs this, *not* `requirements.txt`, because Docling is required at runtime).
+
+#### 2. Pull the Ollama models (on the host)
+
+The defaults in `core/config.py` are:
+
+```bash
+ollama pull qwen2.5:14b-instruct     # generation / requirement synthesis
+ollama pull nomic-embed-text         # embeddings
+```
+
+Override via `.env` (`OLLAMA_LLM_NAME`, `OLLAMA_EMBEDDING_MODEL_NAME`) if you use different tags.
+
+#### 3. Make host Ollama reachable from the containers
+
+By default Ollama binds to `127.0.0.1`, which is unreachable from inside a container. Bind it to all interfaces. For the systemd service:
+
+```bash
+sudo systemctl edit ollama
+# add:
+#   [Service]
+#   Environment="OLLAMA_HOST=0.0.0.0"
+sudo systemctl daemon-reload && sudo systemctl restart ollama
+```
+
+Or, if you run it by hand: `OLLAMA_HOST=0.0.0.0 ollama serve`.
+
+The compose file wires `host.docker.internal` to the host gateway via `extra_hosts`, so the containers reach Ollama at `http://host.docker.internal:11434`.
+
+#### 4. Configure via `.env`
+
+Copy the template and adjust as needed:
+
+```bash
+cp .env.example .env
+```
+
+The Docker-oriented defaults are already correct:
+
+```bash
+OLLAMA_BASE_URL=http://host.docker.internal:11434
+RAG_API_BASE=http://api:8000
+HOME=/tmp                              # writable HOME for the non-root container user
+STREAMLIT_BROWSER_GATHER_USAGE_STATS=false
+UID=1000                              # match your host user (run `id -u` / `id -g`)
+GID=1000
+```
+
+> `.env` is injected into the containers via `env_file:` and is **not** baked into the image (it is listed in `.dockerignore`). Never commit a real `.env`; commit `.env.example` instead.
+
+#### 5. Pre-download Hugging Face assets
+
+With `HF_LOCAL_FILES_ONLY=true` (the default), the reranker, Docling tokenizer, and Docling layout/table models must be cached under `models/` **as real files** before first run. In `pre_download_model.py`, ensure `local_dir_use_symlinks=False` — symlinks point into the HF blob cache, which is not mounted into the container and will read as "missing files". Then:
+
+```bash
+python pre_download_model.py
+ls models/                             # expect cross-encoder-*, sentence-transformers-*
+```
+
+If Docling's layout models are not populated, cache them once with the network open:
+
+```bash
+docker compose exec streamlit env HF_HUB_OFFLINE=0 TRANSFORMERS_OFFLINE=0 \
+  python -c "from docling.utils.model_downloader import download_models; download_models()"
+```
+
+#### 6. Prepare host-mounted files & permissions
+
+The containers run as `${UID}:${GID}` (default `1000:1000`) and bind-mount `models/`, `document_store/`, and `users.db`. These must be writable by that user, and `users.db` must exist as a **file** before the mount (otherwise Docker creates it as a directory):
+
+```bash
+touch users.db
+python manage_users.py init            # create tables
+python manage_users.py add             # create a login (prompts for user/password)
+sudo chown -R 1000:1000 models document_store users.db
+```
+
+> **Why this matters:** SQLite needs write access to the *directory* containing the DB (to create its journal). If `/app` or `users.db` is root-owned while the container runs as uid 1000, **Generate Requirements** silently fails with *"attempt to write a readonly database"* — the first write path in the app. The Dockerfile also runs `chown -R 1000:1000 /app` after `COPY` to cover the in-image copy.
+
+#### 7. Build & launch
+
+```bash
+docker compose up -d --build
+```
+
+Verify the wiring:
+
+```bash
+# config resolved from .env, not hardcoded defaults
+docker compose exec streamlit python -c \
+  "from core.config import OLLAMA_URL, API_URL, MODEL_CACHE_DIR; print(OLLAMA_URL, API_URL, MODEL_CACHE_DIR)"
+# expect: http://host.docker.internal:11434 http://api:8000 models
+
+# containers can reach host Ollama
+docker compose exec api curl -s http://host.docker.internal:11434/api/tags
+
+# DB is writable
+docker compose exec streamlit python -c \
+  "import sqlite3; c=sqlite3.connect('users.db'); c.execute('CREATE TABLE IF NOT EXISTS _t(x)'); c.commit(); print('write ok')"
+```
+
+Then visit **`http://localhost:8501`**, log in, and upload documents.
+
+#### 8. Stop / reset
+
+```bash
+docker compose down                    # stop containers (host-mounted data persists)
+docker compose down --remove-orphans   # also drop any stale/renamed services
+```
+
+#### Performance note
+
+Ingestion runs one `qwen2.5:14b-instruct` call **per chunk** for classification, and **Generate Requirements** runs one generation **per requirement chunk** (with the full verification context + retrieved general context in each prompt) — all sequential. On modest hardware (e.g. a Jetson) this is minutes per document, with the job showing `running` throughout. Test with a small 1–2 page PDF first, and watch `nvidia-smi` / the Ollama logs to confirm it is working rather than stalled.
+
+#### Troubleshooting
+
+| Symptom | Cause | Fix |
+| --- | --- | --- |
+| `unknown or invalid runtime name: nvidia` | Compose still defines a GPU `ollama` service, or a stale one lingers | This stack does not containerise Ollama — remove any `ollama:` service and `depends_on: ollama`; `docker rm -f ollama` |
+| `PermissionError: '/.streamlit'` on every event; upload does nothing | Non-root user has no writable `HOME`, so session bootstrap crashes | Set `HOME=/tmp` (already in `.env.example`) and recreate |
+| Reranker/tokenizer "missing cached files" in offline mode | `models/` mount empty or populated with symlinks | Re-run `pre_download_model.py` with `local_dir_use_symlinks=False`; confirm the mount is `./models:/app/models` |
+| **Generate Requirements** does nothing; no `requirements_job_submitted` in api logs | SQLite DB/dir not writable by the container user | `sudo chown -R 1000:1000 users.db /app`; the sidebar shows the underlying error |
+| Containers can't reach Ollama (`/api/tags` empty/refused) | Host Ollama bound to `127.0.0.1` | Restart with `OLLAMA_HOST=0.0.0.0` |
 
 ---
 
